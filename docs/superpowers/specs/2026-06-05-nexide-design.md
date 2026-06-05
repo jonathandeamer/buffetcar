@@ -55,7 +55,11 @@ These were settled during brainstorming and are fixed for v1:
   every subsequent open relative and structurally refuses escapes, including via
   symlinks, with no TOCTOU window — the Rust analog of Go's `os.Root`. This is
   the one dependency worth spending: hand-rolling symlink- and TOCTOU-safe
-  containment is a class of bug, not a one-liner.
+  containment is a class of bug, not a one-liner. Note that cap-std uses
+  `RESOLVE_BENEATH`-style resolution and rejects *all* `..` components, even
+  in-root ones; the server therefore normalizes `.`/`..` in the selector first
+  (see §6) so that compliant Nex relative links keep working, with cap-std as
+  the final structural check.
 - **Config: CLI flags only (`clap`), secure defaults.** The config surface is
   small; a config file is unnecessary machinery. Defaults are safe out of the
   box (see §3).
@@ -75,7 +79,7 @@ These were settled during brainstorming and are fixed for v1:
 | `config`  | Parse and validate CLI flags into a `Config` (root exists and is a directory, etc.)                     | `clap`     |
 | `server`  | Bind `TcpListener`; run a fixed pool of N worker threads, each looping `accept()` → `conn::handle`      | std        |
 | `conn`    | Per-connection: set read/write timeouts, read one bounded selector line, dispatch, write response, close | std       |
-| `resolve` | Map selector → file/dir inside the root via `cap_std::fs::Dir`; enforce dotfile policy                  | `cap-std`  |
+| `resolve` | Normalize selector (`.`/`..`, reject above-root), open inside the root via `cap_std::fs::Dir`, enforce dotfile policy | `cap-std` |
 | `listing` | Directory handling: serve `index` if present, else generate a plain-text listing with `=> ` links       | std        |
 | `sandbox` | `#[cfg(target_os = "openbsd")]` `pledge`/`unveil`; no-op stub elsewhere                                 | `libc`     |
 
@@ -96,8 +100,11 @@ accept → set read/write timeouts → read selector line (bounded length)
   → close connection
 ```
 
-One request per connection, no retained state. `cap-std` refuses `../` escapes
-and symlink escapes structurally.
+One request per connection, no retained state. "Normalize selector" resolves
+`.`/`..` lexically and rejects selectors that climb above the root; the
+resulting `..`-free path is then opened via `cap-std`, which refuses any
+remaining escape (notably via symlinks) structurally. See §6 for the exact
+normalization and containment rules.
 
 ## 3. Config & secure defaults (`clap`)
 
@@ -138,10 +145,26 @@ generated listing.
 
 ## 6. Security model (consolidated)
 
-- **Containment:** `cap-std` `Dir`, symlink- and TOCTOU-safe; primary guarantee
-  on all platforms.
-- **Dotfile policy:** reject any path component beginning with `.` (also
-  belt-and-suspenders against `.` / `..`).
+- **Selector normalization (precedes containment):** the selector is treated as
+  a path relative to the root. A leading `/` is stripped, `.` segments are
+  dropped, and `..` segments are popped lexically; a selector that pops above the
+  root (an unbalanced `..`) is rejected as an escape. The normalized result
+  contains no `.` or `..` components. This step is required because `cap-std`
+  uses `RESOLVE_BENEATH`-style resolution that rejects *all* `..` components,
+  even in-root ones — normalizing first is what lets compliant Nex relative-link
+  selectors such as `a/b/../c` (→ `a/c`) resolve to their in-root target instead
+  of being refused. Only resolved paths outside the root are rejected, matching
+  the context doc's rule.
+- **Containment (`cap-std`):** the normalized, `..`-free path is opened via a
+  `cap_std::fs::Dir` rooted at the site root. cap-std resolves component by
+  component and refuses anything that escapes the root, including via symlinks,
+  with no TOCTOU window — the structural backstop and final arbiter. Because the
+  final access is validated by cap-std, lexical `..` normalization cannot widen
+  access: the served path is always inside the root.
+- **Dotfile policy:** applied to the *normalized* path, reject any remaining
+  component beginning with `.` (e.g. `.git`, `.env`). The navigation components
+  `.` and `..` are not subject to this rule — they are consumed by normalization
+  above — so this rejects hidden files, not relative-link navigation.
 - **Secure default bind:** loopback; public exposure is explicit.
 - **Resource bounds:** read/write deadlines, bounded selector length, fixed
   concurrency cap with kernel-backlog refusal beyond it.
@@ -155,8 +178,9 @@ generated listing.
 
 Runnable on macOS via `cap-std`:
 
-- path normalization;
-- `../` escape rejected;
+- selector normalization: leading `/` stripped, `.` dropped, in-root `..`
+  resolved (`a/b/../c` → `a/c` is served);
+- above-root escape rejected (`../x`, `a/../../x`);
 - symlink-escape rejected (a symlink inside the tree pointing outside is
   refused);
 - dotfile rejection;
