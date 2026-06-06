@@ -1,11 +1,27 @@
 # buffetcar — design
 
 Date: 2026-06-05
-Status: approved (design phase)
+Status: approved; implementation in progress
+License: MIT OR Apache-2.0
 
 A hardened, single-binary Nex server in Rust. Crate and binary are both named
 `buffetcar`. This document is the design spec; an implementation plan follows
 separately.
+
+## Implementation status
+
+As of 2026-06-06:
+
+- **Landed:** selector resolution, dotfile policy, and directory listings
+  (`serve_selector` in `lib.rs`), cap-std containment, and the contract test
+  suite. Toolchain is in place: `make check` (fmt/clippy/test), CI on
+  ubuntu-latest and macos-latest, a `cargo-deny` supply-chain gate, dependabot,
+  and the Conventional Commits hook. Crate dual-licensed MIT OR Apache-2.0.
+- **Not yet built:** the `config`, `server`, `conn`, and `sandbox` modules
+  (§1/§9) — CLI flags, the `TcpListener` + worker pool, per-connection
+  timeouts and selector bounds, and the OpenBSD `pledge`/`unveil` path. Resolve
+  and listing logic currently sit consolidated in `lib.rs`; they will be split
+  into modules per §9 as the server layer lands.
 
 ## Background
 
@@ -96,8 +112,9 @@ accept → set read/write timeouts → read selector line (bounded length)
   → close connection
 ```
 
-One request per connection, no retained state. `cap-std` refuses `../` escapes
-and symlink escapes structurally.
+One request per connection, no retained state. `cap-std` refuses `../` and
+symlink escapes structurally — it is the sole guard for `..`; the dotfile rule
+(§6) only rejects `.`-prefixed normal components, not `..`.
 
 ## 3. Config & secure defaults (`clap`)
 
@@ -125,12 +142,30 @@ entries sorted. This stays compatible with the spec's relative-link examples
 (e.g. `../nexlog/`). When an `index` file is present it is served instead of a
 generated listing.
 
+Specifics fixed by the implementation:
+
+- **Sort by name alone.** The trailing `/` is applied at render time, after
+  sorting, so a directory and a file sharing a prefix (e.g. `sub` and
+  `sub.txt`) order alphabetically rather than by the `/`-vs-`.` byte.
+- **Non-UTF-8 names are omitted** from listings: a lossy name could not
+  round-trip to a fetchable text selector, so it is skipped rather than
+  rendered with a placeholder.
+- **No `.desc` reverse-ordering.** The Go reference reversed a listing when a
+  `.desc` marker file was present; buffetcar does not carry this over — `.desc`
+  is a dotfile and is rejected by policy.
+
 ## 5. Error handling & logging
 
 - Connection errors (timeout, oversized selector, reset) never crash the server;
   the worker logs and continues.
-- Not found / rejected requests return a short plain-text body, then close. Nex
-  has no status codes.
+- Unavailable targets — missing, permission-denied, or refused by cap-std as an
+  escape — all return the same short body, the literal `document not found`
+  (no trailing newline), then close. They are indistinguishable to the client
+  by design, so nothing leaks *why* a path is unavailable. Nex has no status
+  codes.
+- Genuine operational faults on an already-opened handle (e.g. a read that fails
+  mid-stream) propagate as errors for the server layer to log, rather than
+  masquerading as a missing document.
 - Logging is privacy-conscious: default logs are operational only — startup
   banner, bind address, errors — written to stderr, with **no per-request client
   IPs**. `-v` opts into access logging. Logging is hand-rolled to stderr (no
@@ -140,8 +175,10 @@ generated listing.
 
 - **Containment:** `cap-std` `Dir`, symlink- and TOCTOU-safe; primary guarantee
   on all platforms.
-- **Dotfile policy:** reject any path component beginning with `.` (also
-  belt-and-suspenders against `.` / `..`).
+- **Dotfile policy:** reject any *normal* path component beginning with `.`.
+  This does **not** cover `..` (a parent-dir component): containment of `..`
+  rests entirely on cap-std, which is load-bearing here — do not weaken that
+  dependency assuming the dotfile rule backs it up.
 - **Secure default bind:** loopback; public exposure is explicit.
 - **Resource bounds:** read/write deadlines, bounded selector length, fixed
   concurrency cap with kernel-backlog refusal beyond it.
@@ -167,18 +204,36 @@ Runnable on macOS via `cap-std`:
 - slow-client read-timeout (integration test with a stalling socket);
 - default loopback bind.
 
-The OpenBSD `sandbox` path is `#[cfg]`-gated and compile-checked in CI; it is
-exercised manually on OpenBSD.
+Approach: the reference Go server's behavior was first captured as
+characterization tests, then the unsafe "legacy" cases (dotfile served, `../`
+escape, symlink escape) were inverted into buffetcar's secure contract. The
+landed tests live in `tests/buffetcar_contract.rs` (the `containment.rs` /
+`protocol.rs` split in §9 remains the target) and cover file/index/listing
+serving, binary preservation, dotfile rejection, balanced `..` allowed, `../`
+escape rejected, and symlink-escape rejected. The selector-length bound,
+slow-client timeout, and loopback-bind tests arrive with the server layer.
+
+CI currently runs the gate (fmt, clippy `-D warnings`, test) on
+**ubuntu-latest and macos-latest**, plus a `cargo-deny` job. The OpenBSD
+`sandbox` path is `#[cfg]`-gated; its CI compile-check and manual OpenBSD
+exercise land with `sandbox.rs`.
 
 ## 8. Dependencies
 
 Deliberately small: `clap` (CLI), `cap-std` (containment), `libc` (OpenBSD FFI
-only). No async runtime, no logging crate.
+only). No async runtime, no logging crate. As of 2026-06-06 only `cap-std` is
+pulled in; `clap` and `libc` arrive with the config and sandbox modules.
 
-The lookit-style toolchain ports over after v1 lands: Cargo plus a `Makefile`
+The crate is dual-licensed **MIT OR Apache-2.0** (`LICENSE-MIT`,
+`LICENSE-APACHE`), the Rust-ecosystem default.
+
+The toolchain is already in place (not deferred to after v1): a `Makefile`
 mirroring `make check` (`cargo fmt --check`, `clippy -D warnings`,
-`cargo test`), `cargo-audit` / `cargo-deny` for the vulnerability gate,
-dependabot, and the Conventional Commits hook already installed in this repo.
+`cargo test`), dependabot, and the Conventional Commits hook. The supply-chain
+gate is **`cargo-deny`** (chosen over `cargo-audit`, which it supersedes):
+`deny.toml` enforces RustSec advisories, an allow-listed set of permissive
+licenses, duplicate/wildcard bans, and crates.io-only sources, run in CI via
+`cargo-deny-action` and locally via `make deny`.
 
 ## 9. Project layout
 
