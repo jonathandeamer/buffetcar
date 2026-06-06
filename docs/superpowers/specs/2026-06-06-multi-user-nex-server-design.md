@@ -22,14 +22,20 @@ The important reversals are deliberate:
 - **Threat model:** static public content becomes multi-user hosting with local
   untrusted users able to race request resolution.
 - **Containment:** `cap-std::Dir` becomes an explicit fd-relative resolver using
-  `rustix` `openat`, `O_NOFOLLOW`, and `fstat`. The portable baseline is
-  per-component `openat` + `O_NOFOLLOW`, which is available on Linux, macOS, and
-  OpenBSD. Linux's `openat2` (with `RESOLVE_NO_SYMLINKS`/`RESOLVE_BENEATH`) is an
-  optional Linux-only hardening of the same step, never the cross-platform path,
-  since macOS (a CI target) and OpenBSD lack it. The earlier spec was
-  right that hand-rolling containment is a class of bug; the stronger threat
-  model makes the extra owned security code the cost of avoiding check-then-open
-  races. This is a "security over minimalism" decision.
+  `rustix` `openat`, `O_NOFOLLOW`, and `fstat`. The containment baseline is
+  per-component `openat` + `O_NOFOLLOW`. The public-directory policy also
+  requires a search-only directory open primitive, so directory descent can use
+  execute/search permission without requiring read/list permission. Linux uses
+  `O_PATH`; macOS and BSD targets that expose `O_SEARCH`/`O_EXEC` use that.
+  OpenBSD has `openat`/`O_NOFOLLOW` but no current `O_SEARCH`/`O_PATH`
+  equivalent, so it is not a supported resolver target until this policy can be
+  implemented there without weakening execute-only traversal. Linux's `openat2`
+  (with `RESOLVE_NO_SYMLINKS`/`RESOLVE_BENEATH`) is an optional Linux-only
+  hardening of the same step, never the cross-platform path, since macOS and BSD
+  targets lack it. The earlier spec was right that hand-rolling containment is a
+  class of bug; the stronger threat model makes the extra owned security code the
+  cost of avoiding check-then-open races. This is a "security over minimalism"
+  decision.
 - **CLI:** `clap` becomes hand-parsed `serve`/`check` modes because the CLI
   surface is small and removing a broad dependency tree helps auditability.
 - **Modules:** `resolve` splits into `selector` and `root`; `cli` is added for
@@ -116,7 +122,7 @@ The daemon is a small blocking Unix server.
 | `selector` | Parse/normalize selector bytes into safe path components. |
 | `root` | Own the root directory fd and all fd-relative filesystem operations. |
 | `listing` | Generate bounded directory listings from opened directory fds. |
-| `sandbox` | OpenBSD `pledge`/`unveil`; no-op elsewhere. |
+| `sandbox` | Platform sandbox hooks; no-op where unavailable. OpenBSD `pledge`/`unveil` is only in scope if resolver target support is restored. |
 
 No module except startup receives the root path. After startup the program holds
 a `Root` capability containing an opened root directory descriptor, and all file
@@ -134,8 +140,17 @@ The binary has two run modes:
 The resolver is the security core.
 
 Startup opens `--root` as an absolute path with `O_DIRECTORY | O_CLOEXEC |
-O_NOFOLLOW`; the final root component must not be a symlink. The root device id
-is recorded with `fstat`.
+O_NOFOLLOW` plus the platform's search-only directory access mode (`O_PATH`,
+`O_SEARCH`, or equivalent); the final root component must not be a symlink. The
+root device id is recorded with `fstat`.
+
+The served root is the first directory in every selector path, including an empty
+selector. It is policy-checked like any other directory: the opened root fd must
+be a directory on the recorded device and world-executable (`0o001`) before it is
+used for descent, `index` lookup, or as the final empty-selector result. The
+daemon may validate this at startup, but the request path still rechecks the root
+fd before each resolution so a root chmod from public to private stops serving
+new requests.
 
 Every request is resolved component by component:
 
@@ -154,7 +169,12 @@ Every request is resolved component by component:
    follows symlinks; if any component could be followed as a symlink, lexical
    and physical paths could diverge.
 5. Each remaining component is opened relative to the currently opened directory
-   fd using `openat` with `O_NOFOLLOW`. Directories use `O_DIRECTORY`.
+   fd using `openat` with `O_NOFOLLOW`. Directories used for descent are opened
+   with a search-only/non-readable directory mode (`O_PATH`, `O_SEARCH`, or
+   equivalent) plus `O_DIRECTORY`, so a world-executable but non-world-readable
+   directory such as `0111` remains traversable without becoming listable.
+   Readable directory fds are opened only after the listing policy accepts the
+   directory.
 6. Every opened fd is checked with `fstat` before use.
 
 The final result can only be:
@@ -174,12 +194,14 @@ request path.
 
 ## Public Content Policy
 
-These checks run on opened file descriptors, not on pathnames:
+These checks run on opened file descriptors, not on pathnames. The root
+directory is included; no file or `index` is served through a non-public root.
 
 - Regular files must be regular, world-readable (`0o004`), on the root device,
   and have link count `1`.
 - Directories must be directories, world-executable (`0o001`), and on the root
-  device. A directory must be world-readable (`0o004`) to generate a listing.
+  device. A directory must be world-readable (`0o004`) to generate a listing,
+  but world-readability is not required for direct child access.
 - Symlinks are never followed or listed.
 - Hardlinked regular files are never served. Hardlinks are not a Nex feature and
   rejecting them prevents a user from publishing an inode through a misleading
@@ -206,10 +228,13 @@ generated listing if listing policy permits.
 If a directory has a safe `index`, the index bytes are streamed as-is.
 
 Without an index, the server generates a listing only when the opened directory
-is world-readable. It enumerates names from that directory fd, then opens each
-candidate entry fd-relative and applies the same descriptor checks used for
-direct requests. Entries are skipped if they are dotfiles, symlinks, hardlinks,
-special files, non-UTF-8 names, cross-device entries, or not public by mode bits.
+is world-readable. If the resolver holds only a search-only fd for that
+directory, it first reopens `.` relative to that fd with readable directory flags
+after the world-readable check succeeds. It enumerates names from the readable
+directory fd, then opens each candidate entry fd-relative and applies the same
+descriptor checks used for direct requests. Entries are skipped if they are
+dotfiles, symlinks, hardlinks, special files, non-UTF-8 names, cross-device
+entries, or not public by mode bits.
 
 Listings are sorted by displayed name and rendered as:
 
@@ -262,7 +287,7 @@ buffetcar 0.1.0
   workers:  128
   timeouts: read 5s, write 30s
   policy:   no dotfiles, symlinks, hardlinks, special files, or mount crossing
-  sandbox:  fd-relative containment (pledge/unveil active on OpenBSD)
+  sandbox:  fd-relative containment (platform sandbox unavailable)
 ```
 
 Startup failures print one actionable `error:` line to stderr and exit non-zero.
@@ -351,7 +376,8 @@ servable Nex tree.
 Use a deliberately small Unix dependency set:
 
 - `rustix` for safe wrappers around fd-relative Unix filesystem APIs;
-- target-specific `libc` only for OpenBSD `pledge`/`unveil` FFI.
+- target-specific `libc` for search-only directory flags (`O_SEARCH`) and any
+  future sandbox FFI.
 
 Do not use `cap-std` as the primary containment primitive in this design. It is
 good for static-site containment, but the multi-user invariant is clearer when
@@ -361,8 +387,9 @@ checks the resulting fd.
 Do not use `clap`; the CLI surface is small enough to parse by hand and test.
 This removes a large dependency tree from a network daemon.
 
-Continue to use `cargo-deny`, dual MIT OR Apache-2.0 licensing, CI on Linux and
-macOS, and OpenBSD compile/manual testing for the sandbox path.
+Continue to use `cargo-deny`, dual MIT OR Apache-2.0 licensing, and CI on Linux
+and macOS. Do not claim OpenBSD support until the resolver can satisfy
+execute-only directory traversal there.
 
 ## Project Layout
 
@@ -380,7 +407,7 @@ src/
   selector.rs    # selector byte parsing and lexical normalization
   root.rs        # Root capability and fd-relative resolver
   listing.rs     # index lookup and generated listings from directory fds
-  sandbox.rs     # cfg(openbsd) pledge/unveil; no-op elsewhere
+  sandbox.rs     # platform sandbox hooks; no-op where unavailable
 tests/
   contract.rs    # Nex protocol behavior
   containment.rs # path, symlink, hardlink, device, mode, race policy
@@ -425,6 +452,10 @@ Containment and multi-user tests cover:
 - FIFOs and device/special files are rejected or skipped;
 - non-world-readable files are rejected even when the daemon user can read them;
 - non-world-executable directories are rejected;
+- non-world-executable roots are rejected even when the daemon user can open
+  them;
+- world-executable but non-world-readable directories allow direct child access
+  without generating listings;
 - non-world-readable directories do not generate listings;
 - cross-device entries are rejected where test infrastructure can create them;
 - a stress test repeatedly swaps a name between safe file, symlink, FIFO, and

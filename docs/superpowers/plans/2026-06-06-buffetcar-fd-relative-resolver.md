@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate buffetcar's request path off `cap-std` onto an explicit, fd-relative `rustix` resolver (`openat` + `O_NOFOLLOW` + `fstat`) that enforces the multi-user public-content policy, so containment and the no-symlink/no-special/no-hardlink/world-readable invariants hold structurally under a local untrusted-writer threat model.
+**Goal:** Migrate buffetcar's request path off `cap-std` onto an explicit, fd-relative `rustix` resolver (`openat` + `O_NOFOLLOW` + `fstat`) that enforces the multi-user public-content policy, so containment and the no-symlink/no-special/no-hardlink/world-readable-file/world-executable-directory invariants hold structurally under a local untrusted-writer threat model.
 
-**Architecture:** Split the request path into three modules behind the existing `serve_selector(root, selector)` wrapper. `selector` parses and *lexically* normalizes the selector into a list of plain components plus directory intent (no filesystem access). `root` owns the root directory fd and walks one component at a time with `openat(O_NOFOLLOW | O_NONBLOCK)`, `fstat`-checking every opened descriptor for type, device, mode bits, and link count. `listing` reuses those fd-relative checks to find a public `index` or render a bounded listing. No whole-path open and no `PathBuf::join`-then-open ever touches the request path.
+**Architecture:** Split the request path into three modules behind the existing `serve_selector(root, selector)` wrapper. `selector` parses and *lexically* normalizes the selector into a list of plain components plus directory intent (no filesystem access). `root` owns the root directory fd and walks one component at a time with `openat(O_NOFOLLOW | O_NONBLOCK)`, using search-only directory opens for descent so execute-only public directories remain traversable. Every opened descriptor, including the root at the start of each request, is `fstat`-checked for type, device, mode bits, and link count before use. `listing` reuses those fd-relative checks to find a public `index`; it opens a separate readable directory fd only after the directory is world-readable. No whole-path open and no `PathBuf::join`-then-open ever touches the request path.
 
-**Tech Stack:** Rust 2021. `rustix` 1.1 (feature `fs`) for `openat`/`fstat`/`Dir`. Standard library for `OwnedFd` → `File` reads. Tests use the existing `tests/buffetcar_contract.rs` harness (`TempSite`, `respond`, `unique_name`).
+**Tech Stack:** Rust 2021. `rustix` 1.1 (feature `fs`) for `openat`/`fstat`/`Dir`; direct `libc` only for platform `O_SEARCH` constants not exposed by `rustix::fs::OFlags`. Standard library for `OwnedFd` → `File` reads. Tests use the existing `tests/buffetcar_contract.rs` harness (`TempSite`, `respond`, `unique_name`).
 
 ## Plan of Record
 
@@ -14,19 +14,19 @@ This is **Plan 1 of 3** implementing `docs/superpowers/specs/2026-06-06-multi-us
 
 - **Plan 1 (this plan):** `selector` + `root` + `listing` — the resolver/security core, fully testable through `serve_selector` with no networking.
 - **Plan 2 (later):** `cli` + `config` + `check` local-diagnostics mode — a runnable binary, still no sockets.
-- **Plan 3 (later):** `server` + `conn` + `sandbox` + `main` — listener, worker pool, timeouts, OpenBSD `pledge`/`unveil`.
+- **Plan 3 (later):** `server` + `conn` + `sandbox` + `main` — listener, worker pool, timeouts, and platform sandbox hooks. OpenBSD `pledge`/`unveil` remains desirable, but OpenBSD is not a supported resolver target until execute-only directory traversal can be implemented without weakening the public-directory policy.
 
 **In scope here:** spec sections "Filesystem Resolver", "Public Content Policy", "Directory Listings", the `selector`/`root`/`listing` modules, and the resolver/containment/listing portions of "Testing". The public `serve_selector(root: &Path, selector: &str) -> io::Result<Vec<u8>>` entry point is preserved as the thin library/test wrapper the spec calls for (it opens a `Root` per call; the daemon will open one at startup).
 
 **Out of scope here (later plans):** the binary, `main.rs`, CLI parsing, config validation, the startup banner, worker pool, socket/read/write timeouts, raw-byte selector reading from the wire, `check` mode, `sandbox`, run-as-root refusal, and the architecture-guard tests (added with the daemon).
 
-**Threat-model note:** mode/link-count/type/device checks are point-in-time checks on the *opened* descriptor, which is the commit point. The spec accepts that a file public when its fd is accepted may keep streaming if chmodded mid-stream. `O_NOFOLLOW` refuses a symlink as a path component atomically at open; `O_NONBLOCK` ensures a FIFO/device component is opened (for its type check) without blocking. Because `selector` balances `..` lexically and `root` never opens `..` or follows a symlink, lexical and physical paths cannot diverge.
+**Threat-model note:** mode/link-count/type/device checks are point-in-time checks on the *opened* descriptor, which is the commit point. The spec accepts that a file public when its fd is accepted may keep streaming if chmodded mid-stream. `O_NOFOLLOW` refuses a symlink as a path component atomically at open; `O_NONBLOCK` ensures a FIFO/device component is opened (for its type check) without blocking. Directory descent must not request read permission; otherwise a world-executable but non-world-readable directory would be incorrectly unavailable before policy checks can accept it for direct child access. Because `selector` balances `..` lexically and `root` never opens `..` or follows a symlink, lexical and physical paths cannot diverge.
 
 ---
 
 ## File Structure
 
-- `Cargo.toml` (modify) — drop `cap-std`; add `rustix = { version = "1.1", features = ["fs"] }`.
+- `Cargo.toml` (modify) — drop `cap-std`; add `rustix = { version = "1.1", features = ["fs"] }` and `libc = "0.2"` for target-specific search-only directory flags.
 - `src/lib.rs` (rewrite) — public `serve_selector`; `NOT_FOUND` const; `read_file` helper; `mod selector; mod root; mod listing;`. Dispatches a resolved file/dir to a read or a listing.
 - `src/selector.rs` (create) — `Request` struct and `parse()`: byte-length cap, NUL rejection, trailing-CR trim, dotfile rejection, lexical `..` balancing/escape, trailing-slash directory intent. Pure; no filesystem access. Inline unit tests.
 - `src/root.rs` (create) — `Root` capability (root dir fd + device id), `Resolved`/`Child` enums, the no-follow component walk, and the `fstat`-based public-content predicates reused by `listing`.
@@ -228,6 +228,7 @@ with:
 ```toml
 [dependencies]
 rustix = { version = "1.1", features = ["fs"] }
+libc = "0.2"
 ```
 
 Leave `[features]`, `[package]`, and the `[[test]]` block unchanged.
@@ -389,18 +390,56 @@ use crate::selector::Request;
 use rustix::fs::{self, FileType, Mode, OFlags, Stat};
 use rustix::path::Arg;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 
-/// Open flags for probing a path component: read-only, never follow a final
-/// symlink, never block on a FIFO/device, close-on-exec.
+/// Open flags for probing a file/special path component: read-only, never follow
+/// a final symlink, never block on a FIFO/device, close-on-exec.
 const PROBE: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::NONBLOCK)
     .union(OFlags::CLOEXEC);
 
-/// Probe flags for a component that must be a directory.
-const PROBE_DIR: OFlags = PROBE.union(OFlags::DIRECTORY);
+/// Open flags for a directory that will be enumerated after listing policy
+/// accepts it. This intentionally requests read permission.
+const LIST_DIR: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
+/// Open flags for directory descent. This must not request read permission:
+/// world-executable but non-world-readable directories are traversable but not
+/// listable. Linux exposes this as `O_PATH`; Darwin/BSD targets expose it as
+/// `O_SEARCH`/`O_EXEC` through libc rather than rustix's portable `OFlags`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const TRAVERSE_DIR: OFlags = OFlags::PATH
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+))]
+const TRAVERSE_DIR: OFlags = OFlags::from_bits_retain(
+    (libc::O_SEARCH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32,
+);
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+)))]
+compile_error!(
+    "buffetcar requires O_PATH or O_SEARCH so execute-only directories can be traversed"
+);
+
+fn open_traverse_dir<D: AsFd, P: Arg>(dir: D, path: P) -> io::Result<OwnedFd> {
+    fs::openat(dir, path, TRAVERSE_DIR, Mode::empty())
+}
 
 /// A resolved, already-opened and policy-checked target inside the root.
 pub(crate) enum Resolved {
@@ -425,21 +464,27 @@ impl Root {
     /// directory and not a symlink (`O_NOFOLLOW`); intermediate symlinks in the
     /// operator-chosen absolute path are resolved by the kernel at startup.
     pub(crate) fn open(path: &Path) -> io::Result<Root> {
-        let fd = fs::open(
-            path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let dev = fs::fstat(&fd)?.st_dev as u64;
-        Ok(Root { fd, dev })
+        let fd = fs::open(path, TRAVERSE_DIR, Mode::empty())?;
+        let st = fs::fstat(&fd)?;
+        let dev = st.st_dev as u64;
+        let root = Root { fd, dev };
+        if !root.dir_ok(&st) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "served root is not public",
+            ));
+        }
+        Ok(root)
     }
 
     /// Resolve a parsed request to an opened, policy-checked file or directory.
     pub(crate) fn resolve(&self, request: &Request) -> io::Result<Option<Resolved>> {
-        // Start from an owned handle on the root so the loop can uniformly
-        // `openat` from `cur` and reassign it while descending. "." is never a
-        // symlink, so `PROBE_DIR` opens the root itself safely.
-        let mut cur = fs::openat(&self.fd, ".", PROBE_DIR, Mode::empty())?;
+        // The root is the first directory in every selector path. Re-open and
+        // policy-check it for each request so a root chmod from public to private
+        // stops new resolutions, even though the daemon keeps the startup fd.
+        let Some(mut cur) = self.open_root_dir()? else {
+            return Ok(None);
+        };
 
         let total = request.components.len();
         for (i, name) in request.components.iter().enumerate() {
@@ -470,7 +515,53 @@ impl Root {
     /// whether it is a listable directory or a servable file. Anything else
     /// (symlink, special file, cross-device, or — from Task 3 — non-public mode
     /// or hardlink) is `None`.
-    pub(crate) fn classify_child<P: Arg>(
+    pub(crate) fn classify_child<P: Arg + Copy>(
+        &self,
+        dir: &OwnedFd,
+        name: P,
+    ) -> io::Result<Option<Child>> {
+        if let Some(child) = self.classify_readable_child(dir, name)? {
+            return Ok(Some(child));
+        }
+        match self.open_child_dir(dir, name)? {
+            Some(_) => Ok(Some(Child::Dir)),
+            None => Ok(None),
+        }
+    }
+
+    /// Re-open `dir` for enumeration after confirming the policy bit. The
+    /// resolver may hold only a search-only fd, which is enough for `openat` but
+    /// not for `Dir::read_from`.
+    pub(crate) fn open_listable_dir(&self, dir: &OwnedFd) -> io::Result<Option<OwnedFd>> {
+        let st = fs::fstat(dir)?;
+        if st.st_dev as u64 != self.dev || !self.listable(&st) {
+            return Ok(None);
+        }
+        let fd = match fs::openat(dir, ".", LIST_DIR, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(_) => return Ok(None),
+        };
+        let st = fs::fstat(&fd)?;
+        if st.st_dev as u64 == self.dev && self.listable(&st) {
+            Ok(Some(fd))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn open_root_dir(&self) -> io::Result<Option<OwnedFd>> {
+        let fd = match open_traverse_dir(&self.fd, ".") {
+            Ok(fd) => fd,
+            Err(_) => return Ok(None),
+        };
+        let st = fs::fstat(&fd)?;
+        if st.st_dev as u64 != self.dev || !self.dir_ok(&st) {
+            return Ok(None);
+        }
+        Ok(Some(fd))
+    }
+
+    fn classify_readable_child<P: Arg>(
         &self,
         dir: &OwnedFd,
         name: P,
@@ -490,33 +581,38 @@ impl Root {
         }
     }
 
-    /// Whether an opened directory fd may generate a listing.
-    pub(crate) fn dir_listable(&self, dir: &OwnedFd) -> io::Result<bool> {
-        let st = fs::fstat(dir)?;
-        Ok(st.st_dev as u64 == self.dev && self.listable(&st))
-    }
-
     fn open_leaf(&self, dir: &OwnedFd, name: &str, dir_only: bool) -> io::Result<Option<Resolved>> {
-        // No `O_DIRECTORY`: the final component may be a file or a directory.
-        let fd = match fs::openat(dir, name, PROBE, Mode::empty()) {
-            Ok(fd) => fd,
-            Err(_) => return Ok(None),
-        };
-        let st = fs::fstat(&fd)?;
-        if st.st_dev as u64 != self.dev {
-            return Ok(None);
-        }
-        match FileType::from_raw_mode(st.st_mode) {
-            FileType::Directory if self.dir_ok(&st) => Ok(Some(Resolved::Dir(fd))),
-            FileType::RegularFile if !dir_only && self.file_ok(&st) => {
-                Ok(Some(Resolved::File(fd)))
+        if !dir_only {
+            // No `O_DIRECTORY`: the final component may be a readable file, a
+            // special file opened for type rejection, or a readable directory.
+            let fd = match fs::openat(dir, name, PROBE, Mode::empty()) {
+                Ok(fd) => fd,
+                Err(_) => return self.open_leaf_dir(dir, name),
+            };
+            let st = fs::fstat(&fd)?;
+            if st.st_dev as u64 != self.dev {
+                return Ok(None);
             }
-            _ => Ok(None),
+            match FileType::from_raw_mode(st.st_mode) {
+                FileType::Directory if self.dir_ok(&st) => return Ok(Some(Resolved::Dir(fd))),
+                FileType::RegularFile if self.file_ok(&st) => {
+                    return Ok(Some(Resolved::File(fd)));
+                }
+                _ => return Ok(None),
+            }
+        }
+        self.open_leaf_dir(dir, name)
+    }
+
+    fn open_leaf_dir(&self, dir: &OwnedFd, name: &str) -> io::Result<Option<Resolved>> {
+        match self.open_child_dir(dir, name)? {
+            Some(fd) => Ok(Some(Resolved::Dir(fd))),
+            None => Ok(None),
         }
     }
 
-    fn open_child_dir(&self, dir: &OwnedFd, name: &str) -> io::Result<Option<OwnedFd>> {
-        let fd = match fs::openat(dir, name, PROBE_DIR, Mode::empty()) {
+    fn open_child_dir<P: Arg>(&self, dir: &OwnedFd, name: P) -> io::Result<Option<OwnedFd>> {
+        let fd = match open_traverse_dir(dir, name) {
             Ok(fd) => fd,
             // Missing, a symlink (ELOOP), not a directory, or no search permission.
             Err(_) => return Ok(None),
@@ -563,12 +659,12 @@ pub(crate) fn serve(root: &Root, dir: OwnedFd) -> io::Result<Vec<u8>> {
     if let Some(bytes) = root.open_index(&dir)? {
         return Ok(bytes);
     }
-    if !root.dir_listable(&dir)? {
+    let Some(list_dir) = root.open_listable_dir(&dir)? else {
         return Ok(crate::NOT_FOUND.to_vec());
-    }
+    };
 
     let mut entries: Vec<(String, bool)> = Vec::new();
-    for entry in Dir::read_from(&dir)? {
+    for entry in Dir::read_from(&list_dir)? {
         let entry = entry?;
         let name = entry.file_name(); // &CStr
         let bytes = name.to_bytes();
@@ -578,7 +674,7 @@ pub(crate) fn serve(root: &Root, dir: OwnedFd) -> io::Result<Vec<u8>> {
         }
         // Re-open under no-follow public-content policy; omit anything refused.
         // The `CStr` is opened directly to avoid a lossy conversion.
-        let Some(child) = root.classify_child(&dir, name)? else {
+        let Some(child) = root.classify_child(&list_dir, name)? else {
             continue;
         };
         // A Nex selector is text; a non-UTF-8 name cannot round-trip to a
@@ -666,7 +762,7 @@ Expected: PASS — every pre-existing contract test (`serves_files_directory_ind
 - [ ] **Step 8: Verify formatting, lints, and dependency policy**
 
 Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && make deny`
-Expected: PASS. `rustix` and its transitive deps (`bitflags`, `linux-raw-sys`/`libc`, `errno`) are MIT/Apache-2.0, which the `deny.toml` allow-list already permits; `cap-std`'s subtree is gone.
+Expected: PASS. `rustix`, direct `libc`, and rustix's remaining transitive deps (`bitflags`, `linux-raw-sys`, `errno`) are MIT/Apache-2.0, which the `deny.toml` allow-list already permits; `cap-std`'s subtree is gone.
 
 - [ ] **Step 9: Commit**
 
@@ -760,11 +856,25 @@ fn rejects_non_world_executable_directory() {
 
 #[cfg(unix)]
 #[test]
+fn rejects_non_world_executable_root() {
+    let site = TempSite::new();
+    site.write("public.txt", b"public\n");
+    // The daemon/test user can still open this root as owner, but the served
+    // root is itself a directory in the request path and is not public.
+    make_public(site.path(), 0o700);
+
+    assert_eq!(respond(site.path(), "public.txt"), b"document not found");
+    assert_eq!(respond(site.path(), ""), b"document not found");
+}
+
+#[cfg(unix)]
+#[test]
 fn does_not_list_non_world_readable_directory() {
     let site = TempSite::new();
     site.write("hidden/inside.txt", b"inside\n");
-    // World-executable (traversable) but not world-readable (not listable).
-    site.dir_mode("hidden", 0o711);
+    // World-executable (traversable) but not readable by anyone. This catches
+    // accidental `O_RDONLY` use for descent, which would require read permission.
+    site.dir_mode("hidden", 0o111);
 
     // A direct child is still servable; the directory itself yields no listing.
     assert_eq!(respond(site.path(), "hidden/inside.txt"), b"inside\n");
@@ -774,8 +884,8 @@ fn does_not_list_non_world_readable_directory() {
 
 - [ ] **Step 3: Run the new tests to confirm they fail against the permissive predicates**
 
-Run: `cargo test -- rejects_non_world_readable_file rejects_hardlinked_file rejects_non_world_executable_directory does_not_list_non_world_readable_directory`
-Expected: FAIL — the permissive Task 2 predicates serve the private file, the hardlinked file, the non-executable directory's child, and a listing for the non-readable directory.
+Run: `cargo test -- rejects_non_world_readable_file rejects_hardlinked_file rejects_non_world_executable_directory rejects_non_world_executable_root does_not_list_non_world_readable_directory`
+Expected: FAIL — the permissive Task 2 predicates serve the private file, the hardlinked file, the non-executable directory's child, a child through the non-public root, and a listing for the non-readable directory. If directory descent still uses read-only directory opens, `does_not_list_non_world_readable_directory` fails the other way by refusing `hidden/inside.txt`.
 
 - [ ] **Step 4: Tighten the predicates in `src/root.rs`**
 
@@ -788,11 +898,10 @@ Replace the three predicate functions `dir_ok`, `listable`, and `file_ok` with:
             && Mode::from_raw_mode(st.st_mode).contains(Mode::XOTH)
     }
 
-    /// A listable directory: a directory, world-readable (so a listing exposes
-    /// only what is publicly readable, not what the daemon user happens to read).
+    /// A listable directory: traversable and world-readable (so a listing exposes
+    /// only what is public, not what the daemon user happens to read).
     fn listable(&self, st: &Stat) -> bool {
-        FileType::from_raw_mode(st.st_mode) == FileType::Directory
-            && Mode::from_raw_mode(st.st_mode).contains(Mode::ROTH)
+        self.dir_ok(st) && Mode::from_raw_mode(st.st_mode).contains(Mode::ROTH)
     }
 
     /// A servable regular file: regular, world-readable, and not a hardlink.
@@ -807,7 +916,7 @@ Replace the three predicate functions `dir_ok`, `listable`, and `file_ok` with:
 
 - [ ] **Step 5: Run the new tests to confirm they pass**
 
-Run: `cargo test -- rejects_non_world_readable_file rejects_hardlinked_file rejects_non_world_executable_directory does_not_list_non_world_readable_directory`
+Run: `cargo test -- rejects_non_world_readable_file rejects_hardlinked_file rejects_non_world_executable_directory rejects_non_world_executable_root does_not_list_non_world_readable_directory`
 Expected: PASS.
 
 - [ ] **Step 6: Run the full suite to confirm no regressions**
@@ -936,10 +1045,10 @@ git commit -m "feat: bound generated directory listings"
 
 **Spec coverage (sections of `2026-06-06-multi-user-nex-server-design.md` in scope):**
 - "Nex Compliance" — selector is UTF-8 (`&str` wrapper), trailing-CR trim, NUL/oversized rejection, empty → root, trailing-slash directory intent → Task 1. Directories as `=> ` maps, trailing `/`, `index` served → Tasks 2/4. ✓
-- "Filesystem Resolver" — per-component `openat` + `O_NOFOLLOW`, `fstat` every fd, lexical `..` (balanced allowed, escape rejected), dotfile-before-`..`, no whole-path open → Tasks 1/2. Root opened `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, device recorded → Task 2. ✓
-- "Public Content Policy" — regular + world-readable + link-count-1 + same-device files; directory + world-exec + same-device, world-readable to list; symlinks never followed (`O_NOFOLLOW`); special files rejected by type; cross-device rejected; `index` uses same policy → Tasks 2/3. ✓
-- "Directory Listings" — index-or-listing, world-readable to list, per-entry fd-relative checks, dotfile/symlink/special/non-UTF-8 omission, sorted, 4096-entry / 256 KiB bounds → Tasks 2/3/4. ✓
-- "Testing" (resolver/containment/listing rows) — empty/`/`, files, binary, indexes, listings, sorting, trailing-slash-on-file, balanced/escaping `..`, dotfile, symlink (final + intermediate + index + listing), special files, world-readable/-executable, hardlink, bounds, deterministic fixture permissions → Tasks 1–4. ✓
+- "Filesystem Resolver" — per-component `openat` + `O_NOFOLLOW`, search-only directory descent, `fstat` every fd, lexical `..` (balanced allowed, escape rejected), dotfile-before-`..`, no whole-path open → Tasks 1/2. Root opened no-follow/search-only, device recorded, and policy-checked before every resolution → Tasks 2/3. ✓
+- "Public Content Policy" — regular + world-readable + link-count-1 + same-device files; root/directory + world-exec + same-device, world-readable to list; symlinks never followed (`O_NOFOLLOW`); special files rejected by type; cross-device rejected; `index` uses same policy → Tasks 2/3. ✓
+- "Directory Listings" — index-or-listing, world-readable to list, readable fd opened only after listing policy, per-entry fd-relative checks, dotfile/symlink/special/non-UTF-8 omission, sorted, 4096-entry / 256 KiB bounds → Tasks 2/3/4. ✓
+- "Testing" (resolver/containment/listing rows) — empty/`/`, files, binary, indexes, listings, sorting, trailing-slash-on-file, balanced/escaping `..`, dotfile, symlink (final + intermediate + index + listing), special files, world-readable/-executable, non-world-executable root, execute-only traversal without listing, hardlink, bounds, deterministic fixture permissions → Tasks 1–4. ✓
 - Explicitly out of scope (later plans): `cli`/`config`/`server`/`conn`/`sandbox`/`main`, banner, socket/read/write timeouts, worker pool, raw-byte wire selector, `check` mode, run-as-root refusal, architecture-guard tests, cross-device *entry* fixtures (need privileged mounts), and the concurrent name-swap stress test (belongs with the daemon).
 
 **Placeholder scan:** none — every code and command step is concrete and complete.
@@ -947,9 +1056,9 @@ git commit -m "feat: bound generated directory listings"
 **Type consistency:**
 - `Request { components: Vec<String>, dir_only: bool }` defined in Task 1; consumed by `Root::resolve` and constructed in `selector::tests` (Task 1) — consistent.
 - `Resolved { File(OwnedFd), Dir(OwnedFd) }` and `Child { File(OwnedFd), Dir }` defined in Task 2 (`root.rs`); `Resolved` matched in `lib.rs`, `Child` matched in `listing.rs` and `Root::open_index` — consistent.
-- `Root` methods `open`, `resolve`, `open_index`, `classify_child<P: Arg>`, `dir_listable`, and private `open_leaf`/`open_child_dir`/`dir_ok`/`listable`/`file_ok` defined in Task 2; Task 3 changes only the bodies of `dir_ok`/`listable`/`file_ok` (signatures stable). ✓
+- `Root` methods `open`, `resolve`, `open_index`, `classify_child<P: Arg + Copy>`, `open_listable_dir`, and private `open_root_dir`/`classify_readable_child`/`open_leaf`/`open_leaf_dir`/`open_child_dir`/`dir_ok`/`listable`/`file_ok` defined in Task 2; Task 3 changes only the bodies of `dir_ok`/`listable`/`file_ok` (signatures stable). ✓
 - `crate::read_file(OwnedFd) -> io::Result<Vec<u8>>` and `crate::NOT_FOUND` defined in `lib.rs` (Task 2); referenced from `root.rs` and `listing.rs` — consistent.
-- `PROBE` / `PROBE_DIR` `OFlags` consts (Task 2) used by every `openat`; `MAX_ENTRIES`/`MAX_BYTES` (Task 4) used only in `listing::serve`. ✓
+- `PROBE` / `LIST_DIR` / `TRAVERSE_DIR` `OFlags` consts (Task 2) split file probing, readable listing opens, and search-only directory descent; `MAX_ENTRIES`/`MAX_BYTES` (Task 4) used only in `listing::serve`. ✓
 - Test helpers: `make_public`/`make_chain_public` and `TempSite::{symlink}` (Task 2) reused by `write_mode`/`dir_mode` (Task 3); `respond`/`unique_name`/`TempSite::{new,path,write,dir}` unchanged in signature. ✓
 
-**rustix API grounding:** `openat`/`open`/`fstat`, `OFlags::{RDONLY,NOFOLLOW,NONBLOCK,CLOEXEC,DIRECTORY}` with const `union`, `Mode::{empty,from_raw_mode,ROTH,XOTH,contains}`, `FileType::from_raw_mode` (derives `PartialEq`), `Stat::{st_mode,st_dev,st_nlink}` (cast `as u64` for portability across libc/linux-raw backends), and `Dir::read_from` + `DirEntry::file_name() -> &CStr` were each verified against the installed `rustix` 1.1.4 source before being written into the steps.
+**rustix API grounding:** `openat`/`open`/`fstat`, `OFlags::{RDONLY,NOFOLLOW,NONBLOCK,CLOEXEC,DIRECTORY,PATH}` where target-exposed with const `union`, `OFlags::from_bits_retain` for `libc::O_SEARCH` targets, `Mode::{empty,from_raw_mode,ROTH,XOTH,contains}`, `FileType::from_raw_mode` (derives `PartialEq`), `Stat::{st_mode,st_dev,st_nlink}` (cast `as u64` for portability across libc/linux-raw backends), and `Dir::read_from` + `DirEntry::file_name() -> &CStr` were each verified against the installed `rustix` 1.1.4 source before being written into the steps.
