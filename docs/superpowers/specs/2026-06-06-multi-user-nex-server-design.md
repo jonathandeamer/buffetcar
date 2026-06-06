@@ -73,7 +73,7 @@ The daemon is a small blocking Unix server.
 
 | Module | Responsibility |
 | --- | --- |
-| `cli` | Hand-parse a small CLI surface and print usage/errors. |
+| `cli` | Hand-parse `serve`/`check` modes and print usage/errors. |
 | `config` | Validate root, listen address, worker count, and timeout bounds. |
 | `server` | Bind `TcpListener`; run a fixed pool of worker threads. |
 | `conn` | Apply socket timeouts, read one bounded selector, stream response. |
@@ -85,6 +85,13 @@ The daemon is a small blocking Unix server.
 No module except startup receives the root path. After startup the program holds
 a `Root` capability containing an opened root directory descriptor, and all file
 access is relative to that descriptor.
+
+The binary has two run modes:
+
+- `buffetcar serve --root /var/nex [--listen 127.0.0.1:1900]` starts the Nex
+  daemon. For convenience, omitting `serve` is equivalent to `serve`.
+- `buffetcar check --root /var/nex <selector>...` runs local diagnostics for one
+  or more selectors and exits without binding a socket.
 
 ## Filesystem Resolver
 
@@ -114,6 +121,11 @@ The final result can only be:
 - a regular file fd that passed all public-file checks;
 - a directory fd that passed all public-directory checks;
 - unavailable.
+
+The network path maps every unavailable result to `document not found`. The
+local `check` path preserves a concise internal reason for each unavailable
+selector so operators and site authors can diagnose policy failures without
+weakening remote behavior.
 
 Whole-selector path opens are forbidden. `std::fs::File::open(path)`,
 `cap_std::fs::Dir::open(path)`, and string-based path joins are not used in the
@@ -185,7 +197,7 @@ Hardcoded invariants:
 - read timeout: 5 seconds;
 - index name: `index`;
 - generated listing bounds: 4096 entries, 256 KiB;
-- no root execution. If effective UID is 0, startup fails.
+- no root execution. If effective UID is 0, both `serve` and `check` fail.
 
 Files are streamed in fixed-size chunks; regular files are not read into memory
 as one allocation. A stalled reader can hold one worker until the bounded
@@ -215,6 +227,36 @@ client data.
 
 Shutdown uses default signal handling. No signal dependency is added just to
 print a goodbye message.
+
+## Local Diagnostics
+
+Strict policy needs a local explanation path. `buffetcar check` uses the same
+selector parser, root fd, resolver, index lookup, and listing eligibility logic
+as the daemon, but prints one local result line per selector:
+
+```text
+ok: users/alice/index: regular file, public
+ok: users/alice/nexlog/: directory, public listing
+reject: users/alice/.secret: dotfile component
+reject: users/alice/link: symlink
+reject: users/alice/shared.txt: hardlink count 2
+reject: users/alice/private.txt: not world-readable
+reject: users/alice/nexlog/: directory is not world-executable
+reject: users/alice/media: crosses filesystem boundary
+```
+
+`check` never contacts the network, never requires elevated privileges, and
+never runs with weaker rules than `serve`. It is a local author/operator tool,
+not a remote introspection feature. Result lines go to stdout. Usage and startup
+errors go to stderr. Exit status is `0` when every selector is servable, `1`
+when any selector is rejected, and `2` for usage/startup errors such as a
+missing `--root`.
+
+The README should present the publishing rules in the same terms as `check`:
+regular files are `0644` or otherwise world-readable, directories are `0755` or
+otherwise world-executable, listing directories are world-readable, and symlinks,
+hardlinks, dotfiles, special files, and mount crossings are not part of the
+servable Nex tree.
 
 ## Dependencies
 
@@ -276,6 +318,16 @@ Server tests cover:
 - loopback default bind;
 - config validation;
 - refusal to run as root, when testable without privileges.
+
+Diagnostic tests cover:
+
+- `check` returns `0` and prints `ok:` for servable files and directories;
+- `check` returns `1` and prints stable `reject:` reasons for dotfiles,
+  symlinks, hardlinks, special files, private modes, mount crossing, trailing
+  slash mismatch, and oversized listings;
+- `check` returns `2` for usage and startup errors;
+- `check` and `serve` use the same resolver decisions for the same selector
+  fixtures.
 
 ## Non-Goals
 

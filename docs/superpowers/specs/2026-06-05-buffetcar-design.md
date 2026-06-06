@@ -1,12 +1,13 @@
 # buffetcar — design
 
 Date: 2026-06-05
-Status: approved; implementation in progress
+Status: superseded on 2026-06-06 by
+`docs/superpowers/specs/2026-06-06-multi-user-nex-server-design.md`
 License: MIT OR Apache-2.0
 
 A hardened, single-binary Nex server in Rust. Crate and binary are both named
-`buffetcar`. This document is the design spec; an implementation plan follows
-separately.
+`buffetcar`. This document is retained as project history for the earlier
+static-site threat model. It is no longer the active implementation spec.
 
 ## Core principle
 
