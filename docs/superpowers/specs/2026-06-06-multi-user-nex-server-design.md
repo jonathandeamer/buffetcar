@@ -452,6 +452,10 @@ Architecture guard tests cover:
 - request-path modules do not assemble selector paths with `PathBuf::join` for
   opening; selector components are consumed by the fd-relative `root` resolver.
 
+Optional `nexd_contract` tests are reference characterization only. They do not
+define buffetcar's full red/green implementation sequence; the buffetcar TDD
+plan is written separately after this reference surface is settled.
+
 Diagnostic tests cover:
 
 - `check` returns `0` and prints `ok:` for servable files and directories;
