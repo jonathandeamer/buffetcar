@@ -1,0 +1,27 @@
+name: vuln
+
+# Separate from ci so it has its own pass/fail check and — the point of a
+# dedicated workflow — a weekly schedule. New CVEs are disclosed against code
+# you've already shipped and aren't touching; the cron re-scans unchanged main
+# so a fresh advisory on a dependency turns this red without a push.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: cargo deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+        with:
+          command: check advisories

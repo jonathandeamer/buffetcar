@@ -5,5 +5,13 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A hardened, single-binary Nex server in Rust"
 
+[features]
+nexd-contract = []
+
 [dependencies]
 cap-std = "4.0.2"
+
+[[test]]
+name = "nexd_contract"
+path = "tests/nexd_contract.rs"
+required-features = ["nexd-contract"]
