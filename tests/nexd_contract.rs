@@ -115,3 +115,84 @@ fn nexd_rejects_parent_traversal_selectors() {
 
     assert_eq!(response, b"document not found");
 }
+
+#[test]
+fn nexd_legacy_behavior_serves_direct_dotfile_requests() {
+    let site = TempSite::new();
+    site.write(".secret", b"secret\n");
+
+    let _server = Nexd::start(site.path());
+
+    assert_eq!(request(".secret"), b"secret\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn nexd_legacy_behavior_follows_symlinks_outside_the_root() {
+    use std::os::unix::fs::symlink;
+
+    let site = TempSite::new();
+    let outside = OutsideFile::new(&site, "buffetcar-symlink-target", b"symlink target\n");
+    symlink(outside.path(), site.path().join("leak.txt")).expect("create symlink fixture");
+
+    let _server = Nexd::start(site.path());
+
+    assert_eq!(request("leak.txt"), b"symlink target\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn nexd_legacy_behavior_follows_in_root_symlink_to_dotfile() {
+    use std::os::unix::fs::symlink;
+
+    let site = TempSite::new();
+    site.write(".secret", b"secret\n");
+    symlink(".secret", site.path().join("public")).expect("create symlink fixture");
+
+    let _server = Nexd::start(site.path());
+
+    assert_eq!(request("public"), b"secret\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn nexd_legacy_behavior_serves_symlinked_index() {
+    use std::os::unix::fs::symlink;
+
+    let site = TempSite::new();
+    site.write("docs/.secret", b"secret index\n");
+    site.write("docs/page.txt", b"page\n");
+    symlink(".secret", site.path().join("docs/index")).expect("create symlink fixture");
+
+    let _server = Nexd::start(site.path());
+
+    assert_eq!(request("docs"), b"secret index\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn nexd_legacy_behavior_serves_private_file_when_daemon_user_can_read_it() {
+    let site = TempSite::new();
+    site.write_private("private.txt", b"private\n");
+
+    let _server = Nexd::start(site.path());
+
+    assert_eq!(request("private.txt"), b"private\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn nexd_legacy_behavior_serves_hardlink_to_file_outside_root() {
+    let site = TempSite::new();
+    let outside = OutsideFile::new(&site, "buffetcar-hardlink-target", b"hardlink target\n");
+
+    let link = site.path().join("published-hardlink.txt");
+    if let Err(err) = std::fs::hard_link(outside.path(), &link) {
+        eprintln!("skipping hardlink characterization: hard_link unsupported here: {err}");
+        return;
+    }
+
+    let _server = Nexd::start(site.path());
+
+    assert_eq!(request("published-hardlink.txt"), b"hardlink target\n");
+}
