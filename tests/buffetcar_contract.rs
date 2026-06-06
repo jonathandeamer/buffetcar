@@ -245,6 +245,28 @@ fn does_not_list_non_world_readable_directory() {
     assert_eq!(respond(site.path(), "hidden"), b"document not found");
 }
 
+#[test]
+fn rejects_directory_listing_exceeding_entry_bound() {
+    let site = TempSite::new();
+    for i in 0..4097 {
+        site.write(&format!("big/f{i:05}.txt"), b"x\n");
+    }
+
+    assert_eq!(respond(site.path(), "big"), b"document not found");
+}
+
+#[test]
+fn serves_listing_at_the_entry_bound() {
+    let site = TempSite::new();
+    for i in 0..4096 {
+        site.write(&format!("ok/f{i:05}.txt"), b"x\n");
+    }
+
+    let listing = respond(site.path(), "ok");
+    assert_ne!(listing, b"document not found");
+    assert_eq!(listing.iter().filter(|&&b| b == b'\n').count(), 4096);
+}
+
 fn respond(root: &Path, selector: &str) -> Vec<u8> {
     buffetcar::serve_selector(root, selector).expect("serve selector")
 }
