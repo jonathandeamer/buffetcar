@@ -6,6 +6,9 @@ use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
+#[allow(dead_code)] // wired into serve_selector in Task 2
+mod selector;
+
 const NOT_FOUND: &[u8] = b"document not found";
 const DEFAULT_INDEX: &str = "index";
 
