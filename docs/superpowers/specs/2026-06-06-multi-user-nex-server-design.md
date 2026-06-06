@@ -1,14 +1,42 @@
 # Multi-User Nex Server Design
 
 Date: 2026-06-06
-Status: draft for review
+Status: active design; implementation planning pending review
 Working name: buffetcar
+Supersedes: `docs/superpowers/specs/2026-06-05-buffetcar-design.md`
 
 This is a first-principles design for a Rust Nex server whose primary deployment
 target is a multi-user Unix host. It keeps Nex small: one selector line in, one
 text or binary response out, then close. The security target is stronger than
 the earlier static-site design: local untrusted users may mutate content inside
 the served tree while the daemon is resolving a request.
+
+## Relationship To The Earlier Spec
+
+This document is the plan of record. It supersedes the 2026-06-05 buffetcar
+design, which assumed a static public site and chose `cap-std` as the primary
+containment primitive.
+
+The important reversals are deliberate:
+
+- **Threat model:** static public content becomes multi-user hosting with local
+  untrusted users able to race request resolution.
+- **Containment:** `cap-std::Dir` becomes an explicit fd-relative resolver using
+  `rustix` `openat`/`openat2`, `O_NOFOLLOW`, and `fstat`. The earlier spec was
+  right that hand-rolling containment is a class of bug; the stronger threat
+  model makes the extra owned security code the cost of avoiding check-then-open
+  races. This is a "security over minimalism" decision.
+- **CLI:** `clap` becomes hand-parsed `serve`/`check` modes because the CLI
+  surface is small and removing a broad dependency tree helps auditability.
+- **Modules:** `resolve` splits into `selector` and `root`; `cli` is added for
+  run-mode parsing.
+
+This also means the landed `cap-std` resolver and its tests are not the final
+shape. Implementation keeps the existing public `serve_selector(root: &Path,
+selector: &str) -> io::Result<Vec<u8>>` entry point as a thin test/library
+compatibility wrapper that opens a `Root` for each call. The daemon path should
+open `Root` once at startup and reuse it. Existing tests must be migrated onto
+the new policy and expanded with multi-user containment tests.
 
 ## Core Principle
 
@@ -109,16 +137,21 @@ Every request is resolved component by component:
 
 1. `selector` trims one trailing CR, rejects invalid UTF-8, rejects NUL, splits
    on `/`, and classifies components before filesystem access.
-2. Any original normal component beginning with `.` rejects the whole selector.
+2. Component classes are exact: empty components and `.` are current-directory
+   components; `..` is a parent component; every other component is normal. The
+   dotfile rule applies only to normal components, not to `.` or `..`.
+3. Any original normal component beginning with `.` rejects the whole selector.
    This happens before lexical `..` handling, so a selector cannot hide a
    dotfile probe behind a later parent component.
-3. Empty and `.` components are ignored. `..` above the root rejects the
+4. Empty and `.` components are ignored. `..` above the root rejects the
    selector. Balanced `..` is allowed after lexical normalization, so relative
    Nex links such as `../nexlog/` still work once a client has resolved them
-   into a selector.
-4. Each remaining component is opened relative to the currently opened directory
+   into a selector. This lexical handling is safe only because the resolver never
+   follows symlinks; if any component could be followed as a symlink, lexical
+   and physical paths could diverge.
+5. Each remaining component is opened relative to the currently opened directory
    fd using `openat` with `O_NOFOLLOW`. Directories use `O_DIRECTORY`.
-5. Every opened fd is checked with `fstat` before use.
+6. Every opened fd is checked with `fstat` before use.
 
 The final result can only be:
 
@@ -149,8 +182,15 @@ These checks run on opened file descriptors, not on pathnames:
   in-tree name.
 - FIFOs, sockets, block devices, character devices, and other special files are
   never served or listed.
-- Crossing to another device is rejected. This blocks bind mounts, FUSE mounts,
-  and removable media from silently becoming part of the station.
+- Crossing to another device is rejected. This blocks mounts of other
+  filesystems, including FUSE mounts, removable media, and cross-filesystem bind
+  mounts. A same-filesystem bind mount has the same device id and is not detected
+  by this check.
+
+Mode, link-count, type, and device checks are point-in-time checks on the opened
+descriptor. If a file is public when its fd is accepted and is later chmodded
+while streaming, the held fd may continue streaming those bytes; the server's
+commit point is the descriptor check before response streaming begins.
 
 The implicit `index` lookup uses the same resolver policy as a typed selector,
 with the hardcoded component `index`. A symlinked, hardlinked, special, unreadable,
@@ -320,6 +360,34 @@ This removes a large dependency tree from a network daemon.
 Continue to use `cargo-deny`, dual MIT OR Apache-2.0 licensing, CI on Linux and
 macOS, and OpenBSD compile/manual testing for the sandbox path.
 
+## Project Layout
+
+The target source layout is:
+
+```text
+Cargo.toml
+src/
+  main.rs        # binary entry point; dispatch serve/check modes
+  lib.rs         # public API and module declarations
+  cli.rs         # hand-parsed CLI modes and usage text
+  config.rs      # validated serve/check configuration
+  server.rs      # listener + worker pool, accept loop
+  conn.rs        # per-connection timeouts, selector read, response streaming
+  selector.rs    # selector byte parsing and lexical normalization
+  root.rs        # Root capability and fd-relative resolver
+  listing.rs     # index lookup and generated listings from directory fds
+  sandbox.rs     # cfg(openbsd) pledge/unveil; no-op elsewhere
+tests/
+  contract.rs    # Nex protocol behavior
+  containment.rs # path, symlink, hardlink, device, mode, race policy
+  server.rs      # socket, timeout, worker, startup UX behavior
+  check.rs       # local diagnostics behavior
+```
+
+The current repository still has the earlier `src/lib.rs` and
+`tests/buffetcar_contract.rs` shape. The implementation plan must account for
+that migration rather than assuming the target layout already exists.
+
 ## Testing
 
 Contract tests cover Nex behavior:
@@ -332,6 +400,13 @@ Contract tests cover Nex behavior:
 - directory listings omit dotfiles and non-UTF-8 names;
 - trailing slash on a regular file is unavailable;
 - missing/rejected selectors return `document not found`.
+
+Existing fixture helpers must set deterministic permissions rather than relying
+on the process umask. Test files that should be servable are chmodded to public
+readable (`0644` or equivalent), and test directories that should be traversable
+or listable are chmodded to public executable/readable (`0755` or equivalent).
+This prevents restrictive umasks from turning intended-positive fixtures into
+policy rejections.
 
 Containment and multi-user tests cover:
 
@@ -364,6 +439,14 @@ Server tests cover:
 - human startup/usage errors for invalid root, root execution, invalid listen
   address, bind failure, invalid worker count, and invalid write timeout;
 - refusal to run as root, when testable without privileges.
+
+Architecture guard tests cover:
+
+- request-path modules do not call `std::fs::File::open`, `std::fs::read`,
+  `std::fs::read_dir`, `cap_std::fs::Dir::open`, or equivalent whole-path open
+  helpers;
+- request-path modules do not assemble selector paths with `PathBuf::join` for
+  opening; selector components are consumed by the fd-relative `root` resolver.
 
 Diagnostic tests cover:
 
