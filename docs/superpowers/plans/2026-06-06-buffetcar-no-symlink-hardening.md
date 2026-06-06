@@ -1,5 +1,16 @@
 # Buffetcar No-Symlink Hardening & Library Split — Implementation Plan
 
+Status: superseded on 2026-06-06 by
+`docs/superpowers/specs/2026-06-06-multi-user-nex-server-design.md`
+
+This plan was written against the earlier static-site `cap-std` design
+(`docs/superpowers/specs/2026-06-05-buffetcar-design.md`). The multi-user spec,
+written immediately after, reverses that foundation — it replaces `cap-std` as
+the containment primitive with an fd-relative `rustix` `openat` + `O_NOFOLLOW`
+resolver — so this plan's `resolve.rs` core targets a primitive that is no longer
+the plan of record. It is retained as project history; do not execute it. The
+no-symlink invariant it covers is folded into the multi-user resolver design.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Enforce buffetcar's no-symlink-following invariant uniformly — across selector resolution, the implicit directory-`index` open, and directory-listing enumeration — so a symlinked target can never bypass dotfile rejection, and split the resolution/listing logic out of `lib.rs` into focused modules.
