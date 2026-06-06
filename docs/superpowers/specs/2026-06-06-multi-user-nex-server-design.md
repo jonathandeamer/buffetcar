@@ -63,9 +63,13 @@ directory, but not to a regular file. Selectors without a trailing `/` may
 resolve to either a regular file or a directory. The server performs no URL
 decoding.
 
-Nex has no status codes. Missing files, rejected files, policy failures, and
-root escapes all return the literal body `document not found` with no trailing
-newline.
+Nex has no status codes. Missing files, rejected files, policy failures, invalid
+selectors, oversized selectors, and root escapes all return the literal visitor
+body `document not found` with no trailing newline. That message is intentionally
+plain English but not reason-specific: remote visitors should know the selector
+did not produce a document, but should not learn whether the cause was absence,
+permissions, dotfile policy, symlink policy, mount crossing, or another safety
+rule.
 
 ## Architecture
 
@@ -217,7 +221,9 @@ buffetcar 0.1.0
   sandbox:  fd-relative containment (pledge/unveil active on OpenBSD)
 ```
 
-Startup failures print one actionable `error:` line and exit non-zero.
+Startup failures print one actionable `error:` line to stderr and exit non-zero.
+They never panic, print a backtrace, or expose internal Rust type names in normal
+operation.
 
 There is no access log and no verbosity flag. The server never records client
 IPs or selectors. Connection-level events such as timeout, disconnect, oversized
@@ -227,6 +233,44 @@ client data.
 
 Shutdown uses default signal handling. No signal dependency is added just to
 print a goodbye message.
+
+## Error Message UX
+
+Messages are part of the security model.
+
+Visitor-facing messages follow these rules:
+
+- The only server-generated error body sent over Nex is `document not found`.
+- The body is used for every unavailable selector, including security-policy
+  rejections and malformed selectors.
+- Slow-client read timeouts, disconnected clients, write timeouts, and connection
+  resets receive no extra explanatory text; the server closes the connection and
+  continues.
+- Reason-specific visitor messages are not added, because they would turn the
+  server into a policy and filesystem oracle.
+
+Server-user messages follow different rules because they are local and explicit:
+
+- Usage and startup errors are specific, human, and actionable.
+- Messages begin with `error:` and name the failing flag or operation.
+- Operator-provided paths and addresses may be quoted; remote client selectors
+  and client addresses are not written to daemon logs.
+- Messages say what failed and, where useful, what to do next.
+- Normal operation never prints a panic or backtrace.
+
+Examples:
+
+```text
+error: --root is required
+error: --root '/var/nex': not an absolute path
+error: --root '/var/nex': not a directory
+error: --root '/var/nex': final path component is a symlink
+error: refusing to run as root; run buffetcar as an unprivileged service user
+error: invalid --listen 'localhost:1900': expected an IP socket address
+error: could not bind 127.0.0.1:1900: address already in use
+error: --workers '0': expected a value from 1 to 1024
+error: --write-timeout '999': expected a value from 1 to 300 seconds
+```
 
 ## Local Diagnostics
 
@@ -317,6 +361,8 @@ Server tests cover:
 - worker cap under many concurrent clients;
 - loopback default bind;
 - config validation;
+- human startup/usage errors for invalid root, root execution, invalid listen
+  address, bind failure, invalid worker count, and invalid write timeout;
 - refusal to run as root, when testable without privileges.
 
 Diagnostic tests cover:
@@ -328,6 +374,8 @@ Diagnostic tests cover:
 - `check` returns `2` for usage and startup errors;
 - `check` and `serve` use the same resolver decisions for the same selector
   fixtures.
+- visitor-facing protocol tests assert unavailable selectors all return exactly
+  `document not found`, without reason-specific bodies.
 
 ## Non-Goals
 
