@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn serves_files_directory_indexes_listings_and_not_found() {
@@ -163,9 +163,7 @@ impl Drop for TempSite {
 }
 
 fn unique_name(prefix: &str, suffix: &str) -> String {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_nanos();
-    format!("{prefix}-{}-{unique}{suffix}", std::process::id())
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{n}{suffix}", std::process::id())
 }
