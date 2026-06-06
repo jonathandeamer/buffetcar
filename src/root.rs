@@ -227,18 +227,21 @@ impl Root {
         Ok(Some(fd))
     }
 
-    /// A traversable / servable directory. Mode bits are tightened in Task 3.
+    /// A traversable / servable directory: a directory, world-executable.
     fn dir_ok(&self, st: &Stat) -> bool {
         FileType::from_raw_mode(st.st_mode) == FileType::Directory
+            && Mode::from_raw_mode(st.st_mode).contains(Mode::XOTH)
     }
 
-    /// A listable directory. World-readable requirement is added in Task 3.
+    /// A listable directory: traversable and world-readable.
     fn listable(&self, st: &Stat) -> bool {
-        FileType::from_raw_mode(st.st_mode) == FileType::Directory
+        self.dir_ok(st) && Mode::from_raw_mode(st.st_mode).contains(Mode::ROTH)
     }
 
-    /// A servable regular file. World-readable + link-count are added in Task 3.
+    /// A servable regular file: regular, world-readable, and not a hardlink.
     fn file_ok(&self, st: &Stat) -> bool {
         FileType::from_raw_mode(st.st_mode) == FileType::RegularFile
+            && Mode::from_raw_mode(st.st_mode).contains(Mode::ROTH)
+            && st.st_nlink as u64 == 1
     }
 }

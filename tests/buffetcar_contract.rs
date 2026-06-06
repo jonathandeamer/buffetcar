@@ -185,6 +185,66 @@ fn rejects_and_omits_special_files() {
     assert_eq!(respond(site.path(), "dev"), b"=> real.txt\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn rejects_non_world_readable_file() {
+    let site = TempSite::new();
+    site.write_mode("private.txt", b"private\n", 0o600);
+
+    assert_eq!(respond(site.path(), "private.txt"), b"document not found");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_hardlinked_file() {
+    let site = TempSite::new();
+    site.write("original.txt", b"shared\n");
+    fs::hard_link(
+        site.path().join("original.txt"),
+        site.path().join("alias.txt"),
+    )
+    .expect("create hardlink fixture");
+
+    assert_eq!(respond(site.path(), "original.txt"), b"document not found");
+    assert_eq!(respond(site.path(), "alias.txt"), b"document not found");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_non_world_executable_directory() {
+    let site = TempSite::new();
+    site.write("locked/inside.txt", b"inside\n");
+    site.dir_mode("locked", 0o600);
+
+    assert_eq!(
+        respond(site.path(), "locked/inside.txt"),
+        b"document not found"
+    );
+    assert_eq!(respond(site.path(), "locked"), b"document not found");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_non_world_executable_root() {
+    let site = TempSite::new();
+    site.write("public.txt", b"public\n");
+    make_public(site.path(), 0o700);
+
+    assert_eq!(respond(site.path(), "public.txt"), b"document not found");
+    assert_eq!(respond(site.path(), ""), b"document not found");
+}
+
+#[cfg(unix)]
+#[test]
+fn does_not_list_non_world_readable_directory() {
+    let site = TempSite::new();
+    site.write("hidden/inside.txt", b"inside\n");
+    site.dir_mode("hidden", 0o111);
+
+    assert_eq!(respond(site.path(), "hidden/inside.txt"), b"inside\n");
+    assert_eq!(respond(site.path(), "hidden"), b"document not found");
+}
+
 fn respond(root: &Path, selector: &str) -> Vec<u8> {
     buffetcar::serve_selector(root, selector).expect("serve selector")
 }
@@ -226,6 +286,27 @@ impl TempSite {
         fs::create_dir_all(&path).expect("create fixture directory");
         #[cfg(unix)]
         make_chain_public(&self.path, &path);
+    }
+
+    #[cfg(unix)]
+    fn write_mode(&self, relative: &str, content: &[u8], mode: u32) {
+        let path = self.path.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent directory");
+            make_chain_public(&self.path, parent);
+        }
+        fs::write(&path, content).expect("write fixture file");
+        make_public(&path, mode);
+    }
+
+    #[cfg(unix)]
+    fn dir_mode(&self, relative: &str, mode: u32) {
+        let path = self.path.join(relative);
+        fs::create_dir_all(&path).expect("create fixture directory");
+        if let Some(parent) = path.parent() {
+            make_chain_public(&self.path, parent);
+        }
+        make_public(&path, mode);
     }
 
     #[cfg(unix)]
