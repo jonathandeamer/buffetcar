@@ -124,6 +124,67 @@ fn rejects_symlink_escape_outside_the_root() {
     fs::remove_file(outside).expect("remove symlink target");
 }
 
+#[cfg(unix)]
+#[test]
+fn refuses_in_root_symlink_to_ordinary_target() {
+    let site = TempSite::new();
+    site.write("real.txt", b"real\n");
+    site.symlink("real.txt", "alias.txt");
+
+    assert_eq!(respond(site.path(), "alias.txt"), b"document not found");
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_in_root_symlink_to_dotfile_target() {
+    let site = TempSite::new();
+    site.write(".secret", b"top secret\n");
+    site.symlink(".secret", "public");
+
+    assert_eq!(respond(site.path(), "public"), b"document not found");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_index_falls_back_to_listing() {
+    let site = TempSite::new();
+    site.write("docs/.secret", b"secret index\n");
+    site.write("docs/page.txt", b"page\n");
+    site.symlink(".secret", "docs/index");
+
+    assert_eq!(respond(site.path(), "docs"), b"=> page.txt\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn omits_symlink_entries_from_listings() {
+    let site = TempSite::new();
+    site.write("links/real.txt", b"real\n");
+    site.symlink("real.txt", "links/alias.txt");
+
+    assert_eq!(respond(site.path(), "links"), b"=> real.txt\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_and_omits_special_files() {
+    let site = TempSite::new();
+    site.dir("dev");
+    site.write("dev/real.txt", b"real\n");
+    let fifo = site.path().join("dev").join("pipe");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !made {
+        return;
+    }
+
+    assert_eq!(respond(site.path(), "dev/pipe"), b"document not found");
+    assert_eq!(respond(site.path(), "dev"), b"=> real.txt\n");
+}
+
 fn respond(root: &Path, selector: &str) -> Vec<u8> {
     buffetcar::serve_selector(root, selector).expect("serve selector")
 }
@@ -136,6 +197,8 @@ impl TempSite {
     fn new() -> Self {
         let path = std::env::temp_dir().join(unique_name("buffetcar-contract", ""));
         fs::create_dir(&path).expect("create temp site root");
+        #[cfg(unix)]
+        make_public(&path, 0o755);
         Self { path }
     }
 
@@ -148,11 +211,26 @@ impl TempSite {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create parent directory");
         }
-        fs::write(path, content).expect("write fixture file");
+        fs::write(&path, content).expect("write fixture file");
+        #[cfg(unix)]
+        {
+            make_public(&path, 0o644);
+            if let Some(parent) = path.parent() {
+                make_chain_public(&self.path, parent);
+            }
+        }
     }
 
     fn dir(&self, relative: &str) {
-        fs::create_dir_all(self.path.join(relative)).expect("create fixture directory");
+        let path = self.path.join(relative);
+        fs::create_dir_all(&path).expect("create fixture directory");
+        #[cfg(unix)]
+        make_chain_public(&self.path, &path);
+    }
+
+    #[cfg(unix)]
+    fn symlink(&self, target: &str, link: &str) {
+        std::os::unix::fs::symlink(target, self.path.join(link)).expect("create symlink fixture");
     }
 }
 
@@ -166,4 +244,23 @@ fn unique_name(prefix: &str, suffix: &str) -> String {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{}-{n}{suffix}", std::process::id())
+}
+
+#[cfg(unix)]
+fn make_public(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod fixture");
+}
+
+#[cfg(unix)]
+fn make_chain_public(root: &Path, leaf: &Path) {
+    let mut dir = Some(leaf);
+    while let Some(d) = dir {
+        make_public(d, 0o755);
+        if d == root {
+            break;
+        }
+        dir = d.parent();
+    }
 }
