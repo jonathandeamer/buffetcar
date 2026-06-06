@@ -266,7 +266,9 @@ pub fn make_public_dir(_path: &Path) {}
 
 fn make_public_dir_tree(root: &Path, dir: &Path) {
     make_public_dir(root);
-    let relative = dir.strip_prefix(root).expect("fixture directory under root");
+    let relative = dir
+        .strip_prefix(root)
+        .expect("fixture directory under root");
     let mut current = root.to_path_buf();
     for component in relative.components() {
         current.push(component.as_os_str());
