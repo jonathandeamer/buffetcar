@@ -3,12 +3,5 @@ name = "buffetcar"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-nexd-contract = []
-
 [dependencies]
-
-[[test]]
-name = "nexd_contract"
-path = "tests/nexd_contract.rs"
-required-features = ["nexd-contract"]
+cap-std = "4.0.2"
