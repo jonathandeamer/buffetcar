@@ -130,6 +130,44 @@ impl Drop for TempSite {
     }
 }
 
+/// A uniquely named, world-readable fixture created in the site root's *parent*
+/// directory, for symlink/hardlink targets and parent-traversal probes. Removed
+/// on drop so a panicking assertion never leaks fixtures into the shared temp
+/// directory.
+pub struct OutsideFile {
+    path: PathBuf,
+}
+
+impl OutsideFile {
+    pub fn new(site: &TempSite, prefix: &str, content: impl AsRef<[u8]>) -> Self {
+        let path = site
+            .path()
+            .parent()
+            .expect("site has parent")
+            .join(unique_name(prefix, ".txt"));
+        fs::write(&path, content).expect("write outside fixture");
+        make_public_file(&path);
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn name(&self) -> &str {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("outside fixture has a UTF-8 name")
+    }
+}
+
+impl Drop for OutsideFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 pub struct Nexd {
     child: Child,
     _port_guard: MutexGuard<'static, ()>,
@@ -355,8 +393,7 @@ Create `tests/nexd_contract.rs` with these tests:
 
 mod common;
 
-use common::{request, unique_name, Nexd, TempSite};
-use std::fs;
+use common::{request, Nexd, OutsideFile, TempSite};
 
 #[test]
 fn nexd_serves_root_index_files_directory_indexes_and_not_found() {
@@ -457,18 +494,11 @@ fn nexd_rejects_selectors_containing_parent_components_even_when_balanced() {
 #[test]
 fn nexd_rejects_parent_traversal_selectors() {
     let site = TempSite::new();
-    let outside_name = unique_name("buffetcar-outside", ".txt");
-    let outside = site
-        .path()
-        .parent()
-        .expect("site has parent")
-        .join(&outside_name);
-    fs::write(&outside, b"outside root\n").expect("write outside fixture");
+    let outside = OutsideFile::new(&site, "buffetcar-outside", b"outside root\n");
 
     let _server = Nexd::start(site.path());
-    let response = request(&format!("../{outside_name}"));
+    let response = request(&format!("../{}", outside.name()));
 
-    fs::remove_file(&outside).expect("remove outside fixture");
     assert_eq!(response, b"document not found");
 }
 ```
@@ -493,6 +523,13 @@ git commit -m "test: characterize baseline nexd behavior"
 
 - [ ] **Step 1: Append unsafe legacy behavior tests**
 
+> **Unverified characterizations:** Unlike the Task 2 baseline (which was
+> previously confirmed against this `nexd`), the in-root symlink, symlinked
+> index, same-user private-file, and hardlink cases below are new assumptions.
+> Step 2's run is what confirms them. If `nexd` diverges from an assertion,
+> correct the *test* to match observed reference behavior — do not change
+> `nexd` — and note whether the real behavior is still legacy-unsafe.
+
 Append these tests to `tests/nexd_contract.rs`:
 
 ```rust
@@ -512,20 +549,12 @@ fn nexd_legacy_behavior_follows_symlinks_outside_the_root() {
     use std::os::unix::fs::symlink;
 
     let site = TempSite::new();
-    let outside_name = unique_name("buffetcar-symlink-target", ".txt");
-    let outside = site
-        .path()
-        .parent()
-        .expect("site has parent")
-        .join(outside_name);
-    fs::write(&outside, b"symlink target\n").expect("write symlink target");
-    symlink(&outside, site.path().join("leak.txt")).expect("create symlink fixture");
+    let outside = OutsideFile::new(&site, "buffetcar-symlink-target", b"symlink target\n");
+    symlink(outside.path(), site.path().join("leak.txt")).expect("create symlink fixture");
 
     let _server = Nexd::start(site.path());
-    let response = request("leak.txt");
 
-    fs::remove_file(outside).expect("remove symlink target");
-    assert_eq!(response, b"symlink target\n");
+    assert_eq!(request("leak.txt"), b"symlink target\n");
 }
 
 #[cfg(unix)]
@@ -572,26 +601,17 @@ fn nexd_legacy_behavior_serves_private_file_when_daemon_user_can_read_it() {
 #[test]
 fn nexd_legacy_behavior_serves_hardlink_to_file_outside_root() {
     let site = TempSite::new();
-    let outside_name = unique_name("buffetcar-hardlink-target", ".txt");
-    let outside = site
-        .path()
-        .parent()
-        .expect("site has parent")
-        .join(outside_name);
-    fs::write(&outside, b"hardlink target\n").expect("write hardlink target");
-    common::make_public_file(&outside);
+    let outside = OutsideFile::new(&site, "buffetcar-hardlink-target", b"hardlink target\n");
 
     let link = site.path().join("published-hardlink.txt");
-    if fs::hard_link(&outside, &link).is_err() {
-        fs::remove_file(outside).expect("remove hardlink target");
+    if let Err(err) = std::fs::hard_link(outside.path(), &link) {
+        eprintln!("skipping hardlink characterization: hard_link unsupported here: {err}");
         return;
     }
 
     let _server = Nexd::start(site.path());
-    let response = request("published-hardlink.txt");
 
-    fs::remove_file(outside).expect("remove hardlink target");
-    assert_eq!(response, b"hardlink target\n");
+    assert_eq!(request("published-hardlink.txt"), b"hardlink target\n");
 }
 ```
 
@@ -599,7 +619,7 @@ fn nexd_legacy_behavior_serves_hardlink_to_file_outside_root() {
 
 Run: `cargo test --features nexd-contract --test nexd_contract -- --nocapture`
 
-Expected: PASS. The tests named `nexd_legacy_behavior_*` document unsafe or policy-divergent behavior that buffetcar should not copy under the active multi-user spec.
+Expected: PASS. The tests named `nexd_legacy_behavior_*` document unsafe or policy-divergent behavior that buffetcar should not copy under the active multi-user spec. If `hard_link` is unsupported on the fixture filesystem, the hardlink test logs a skip notice (visible with `--nocapture`) and returns without asserting.
 
 - [ ] **Step 3: Commit**
 
@@ -636,6 +656,7 @@ deny: ## audit dependencies (needs: cargo install cargo-deny)
 	cargo deny check advisories licenses bans sources
 
 nexd-contract: ## run optional reference nexd characterization tests (needs Go and NEXD_REPO or ../nexd)
+	cargo clippy --features nexd-contract --test nexd_contract -- -D warnings
 	cargo test --features nexd-contract --test nexd_contract
 
 hooks: ## install git hooks (commit-msg: Conventional Commits); run once per clone
@@ -662,6 +683,15 @@ or, if the reference checkout is not at `../nexd`:
 
 ```sh
 NEXD_REPO=/path/to/nexd make nexd-contract
+```
+
+Building `nexd` resolves `hg.sr.ht/~m15o/nex-pfm`, a Mercurial-hosted Go module,
+so the first build needs network access and a `hg` client. Pre-warm the module
+cache so later runs work offline and so fetch failures surface up front instead
+of looking like a test failure:
+
+```sh
+(cd "${NEXD_REPO:-../nexd}" && go mod download)
 ```
 
 These tests are not part of `make check`. They characterize reference behavior
@@ -724,4 +754,4 @@ git commit -m "docs: scope nexd contracts as reference tests"
 
 **Completeness scan:** No placeholder work remains. Every file change has concrete content and commands.
 
-**Type consistency:** `TempSite`, `Nexd`, `request`, `unique_name`, `make_public_file`, `write_private`, and `make_public_dir` are defined in `tests/common/mod.rs` before use in `tests/nexd_contract.rs`.
+**Type consistency:** `TempSite`, `Nexd`, `OutsideFile`, `request`, `make_public_file`, `write_private`, and `make_public_dir` are defined in `tests/common/mod.rs` before use in `tests/nexd_contract.rs`; `unique_name` is used internally by the harness (`TempSite` and `OutsideFile`) rather than by the tests directly.
