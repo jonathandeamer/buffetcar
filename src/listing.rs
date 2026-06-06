@@ -5,6 +5,10 @@ use rustix::fs::Dir;
 use std::io;
 use std::os::fd::OwnedFd;
 
+/// Hardcoded listing bounds (spec: "Directory Listings").
+const MAX_ENTRIES: usize = 4096;
+const MAX_BYTES: usize = 256 * 1024;
+
 pub(crate) fn serve(root: &Root, dir: OwnedFd) -> io::Result<Vec<u8>> {
     if let Some(bytes) = root.open_index(&dir)? {
         return Ok(bytes);
@@ -28,6 +32,9 @@ pub(crate) fn serve(root: &Root, dir: OwnedFd) -> io::Result<Vec<u8>> {
             continue;
         };
         entries.push((name.to_owned(), matches!(child, Child::Dir)));
+        if entries.len() > MAX_ENTRIES {
+            return Ok(crate::NOT_FOUND.to_vec());
+        }
     }
 
     entries.sort();
@@ -40,6 +47,9 @@ pub(crate) fn serve(root: &Root, dir: OwnedFd) -> io::Result<Vec<u8>> {
             out.push('/');
         }
         out.push('\n');
+        if out.len() > MAX_BYTES {
+            return Ok(crate::NOT_FOUND.to_vec());
+        }
     }
     Ok(out.into_bytes())
 }
