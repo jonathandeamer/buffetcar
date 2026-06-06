@@ -1,0 +1,30 @@
+# cargo-deny configuration. See https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+# Fail on crates with a RustSec advisory or that have been yanked. Unmaintained
+# and unsound default to warn/deny per cargo-deny's built-in policy.
+yanked = "deny"
+
+[licenses]
+version = 2
+# Allow-list only: any dependency whose license is not listed here fails the
+# build. Copyleft (GPL/AGPL/etc.) is denied by simply not being allowed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Flag (don't fail on) duplicate versions of the same crate to keep the tree
+# small and auditable; forbid wildcard version requirements outright.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Only crates.io is trusted as a source; unknown registries or git remotes fail.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

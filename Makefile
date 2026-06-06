@@ -1,4 +1,4 @@
-.PHONY: check fmt clippy test hooks
+.PHONY: check fmt clippy test deny hooks
 
 check: fmt clippy test ## run the full local gate (fmt, clippy, test)
 
@@ -10,6 +10,9 @@ clippy: ## lint with warnings denied
 
 test: ## run the test suite
 	cargo test
+
+deny: ## audit dependencies (needs: cargo install cargo-deny)
+	cargo deny check advisories licenses bans sources
 
 hooks: ## install git hooks (commit-msg: Conventional Commits); run once per clone
 	git config core.hooksPath .githooks

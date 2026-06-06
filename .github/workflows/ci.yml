@@ -29,11 +29,11 @@ jobs:
       - name: Test
         run: cargo test
 
-  audit:
-    name: cargo audit
+  deny:
+    name: cargo deny
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          command: check advisories licenses bans sources
