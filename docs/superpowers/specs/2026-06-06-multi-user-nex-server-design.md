@@ -22,7 +22,11 @@ The important reversals are deliberate:
 - **Threat model:** static public content becomes multi-user hosting with local
   untrusted users able to race request resolution.
 - **Containment:** `cap-std::Dir` becomes an explicit fd-relative resolver using
-  `rustix` `openat`/`openat2`, `O_NOFOLLOW`, and `fstat`. The earlier spec was
+  `rustix` `openat`, `O_NOFOLLOW`, and `fstat`. The portable baseline is
+  per-component `openat` + `O_NOFOLLOW`, which is available on Linux, macOS, and
+  OpenBSD. Linux's `openat2` (with `RESOLVE_NO_SYMLINKS`/`RESOLVE_BENEATH`) is an
+  optional Linux-only hardening of the same step, never the cross-platform path,
+  since macOS (a CI target) and OpenBSD lack it. The earlier spec was
   right that hand-rolling containment is a class of bug; the stronger threat
   model makes the extra owned security code the cost of avoiding check-then-open
   races. This is a "security over minimalism" decision.
