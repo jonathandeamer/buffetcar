@@ -26,6 +26,39 @@ fn serves_files_directory_indexes_listings_and_not_found() {
 }
 
 #[test]
+fn directory_listings_sort_by_name_independent_of_trailing_slash() {
+    let site = TempSite::new();
+    site.write("listing/sub/inner.txt", b"inner\n");
+    site.write("listing/sub.txt", b"file\n");
+
+    // "sub" < "sub.txt" by name, so the directory lists first even though its
+    // rendered "sub/" would sort after "sub.txt" if the slash were included.
+    assert_eq!(respond(site.path(), "listing"), b"=> sub/\n=> sub.txt\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn omits_non_utf8_names_from_listings() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let site = TempSite::new();
+    site.write("listing/ok.txt", b"ok\n");
+    let bad = site
+        .path()
+        .join("listing")
+        .join(OsStr::from_bytes(b"bad\xffname"));
+    // Some filesystems (e.g. APFS on macOS) reject non-UTF-8 names outright; on
+    // those there is nothing to skip, so the assertion only runs where the
+    // fixture can actually be created.
+    if fs::write(bad, b"bad\n").is_err() {
+        return;
+    }
+
+    assert_eq!(respond(site.path(), "listing"), b"=> ok.txt\n");
+}
+
+#[test]
 fn preserves_binary_file_bytes() {
     let site = TempSite::new();
     let bytes = [0, 1, 2, b'\n', 0xff, b'n', b'e', b'x'];

@@ -1,7 +1,7 @@
 //! Buffetcar Nex server.
 
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, FileType};
+use cap_std::fs::Dir;
 use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -17,9 +17,14 @@ pub fn serve_selector(root: &Path, selector: &str) -> io::Result<Vec<u8>> {
         return Ok(NOT_FOUND.to_vec());
     }
 
-    match serve_path(&root, &selector) {
-        Ok(response) => Ok(response),
-        Err(_) => Ok(NOT_FOUND.to_vec()),
+    // cap-std is the load-bearing containment guarantee: it structurally
+    // refuses `..` and symlink escapes out of the root with no TOCTOU window.
+    // The dotfile check above deliberately does not cover `..`
+    // (Component::ParentDir falls through), so containment of relative
+    // traversal rests entirely on cap-std — do not weaken that dependency.
+    match resolve(&root, &selector)? {
+        Some(response) => Ok(response),
+        None => Ok(NOT_FOUND.to_vec()),
     }
 }
 
@@ -43,20 +48,29 @@ fn is_dotfile_name(name: &OsStr) -> bool {
     name.as_encoded_bytes().first() == Some(&b'.')
 }
 
-fn serve_path(root: &Dir, path: &Path) -> io::Result<Vec<u8>> {
-    let file = root.open(path)?;
-    let metadata = file.metadata()?;
+/// Resolve a contained selector to its response bytes.
+///
+/// Returns `Ok(None)` when the target is unavailable — missing, permission
+/// denied, or refused by cap-std as an escape. These are indistinguishable to a
+/// client by design, so all collapse to a "not found" body and none leak why.
+/// Genuine operational faults on an already-opened handle (a failed read, for
+/// example) propagate as `Err` so the server layer can log them rather than
+/// masquerade them as a missing document.
+fn resolve(root: &Dir, path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let file = match root.open(path) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
 
-    if metadata.is_dir() {
-        return serve_directory(root, path);
+    if file.metadata()?.is_dir() {
+        return serve_directory(root, path).map(Some);
     }
 
-    read_all(file)
+    read_all(file).map(Some)
 }
 
 fn serve_directory(root: &Dir, path: &Path) -> io::Result<Vec<u8>> {
-    let index_path = path.join(DEFAULT_INDEX);
-    if let Ok(index) = root.open(&index_path) {
+    if let Ok(index) = root.open(path.join(DEFAULT_INDEX)) {
         return read_all(index);
     }
 
@@ -68,22 +82,28 @@ fn serve_directory(root: &Dir, path: &Path) -> io::Result<Vec<u8>> {
         if is_dotfile_name(&name) {
             continue;
         }
-
-        let mut line = String::from("=> ");
-        line.push_str(&name.to_string_lossy());
-        if is_dir(entry.file_type()?) {
-            line.push('/');
-        }
-        line.push('\n');
-        entries.push(line);
+        // A Nex selector is text; a non-UTF-8 name could not round-trip to a
+        // fetchable link, so omit it rather than emit a lossy placeholder.
+        let Some(name) = name.to_str().map(str::to_owned) else {
+            continue;
+        };
+        entries.push((name, entry.file_type()?.is_dir()));
     }
 
+    // Sort by name alone so a directory and a file sharing a prefix order
+    // alphabetically; the trailing slash is presentation, applied on render.
     entries.sort();
-    Ok(entries.concat().into_bytes())
-}
 
-fn is_dir(file_type: FileType) -> bool {
-    file_type.is_dir()
+    let mut listing = String::new();
+    for (name, is_dir) in entries {
+        listing.push_str("=> ");
+        listing.push_str(&name);
+        if is_dir {
+            listing.push('/');
+        }
+        listing.push('\n');
+    }
+    Ok(listing.into_bytes())
 }
 
 fn read_all(mut file: cap_std::fs::File) -> io::Result<Vec<u8>> {
