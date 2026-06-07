@@ -110,7 +110,7 @@ mod tests {
     use super::*;
     use crate::root::Root;
     use std::fs;
-    use std::io::{Cursor, Read as _, Write as _};
+    use std::io::Cursor;
     use std::net::{Shutdown, TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};

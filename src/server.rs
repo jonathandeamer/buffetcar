@@ -128,7 +128,7 @@ mod tests {
     use super::*;
     use crate::root::Root;
     use std::fs;
-    use std::io::{Read as _, Write as _};
+    use std::io::Read as _;
     use std::net::{Shutdown, SocketAddr, TcpStream};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};

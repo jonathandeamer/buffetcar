@@ -67,14 +67,13 @@ where
                 2
             }
         },
-        Ok(config::RunMode::Serve(config)) => {
-            let _ = config::write_banner(&config, &mut *err);
-            let _ = writeln!(
-                err,
-                "error: serve networking is not implemented in this build"
-            );
-            2
-        }
+        Ok(config::RunMode::Serve(config)) => match server::run(&config, &mut *err) {
+            Ok(()) => 0,
+            Err(error) => {
+                let _ = writeln!(err, "error: {}", error.message());
+                1
+            }
+        },
         Err(error) => {
             let _ = writeln!(err, "error: {}", error.message());
             2
