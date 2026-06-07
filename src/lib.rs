@@ -8,6 +8,7 @@ mod listing;
 mod root;
 mod sandbox;
 mod selector;
+mod server;
 
 use root::{Resolved, Root};
 use std::ffi::OsString;
