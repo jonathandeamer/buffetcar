@@ -1,4 +1,4 @@
-use crate::cli::{CheckArgs, Command, ServeArgs, Subcommand};
+use crate::cli::{CheckArgs, CliError, Command, ServeArgs, Subcommand};
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -31,35 +31,11 @@ pub(crate) struct CheckConfig {
     pub(crate) selectors: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConfigError {
-    message: String,
-    pub(crate) hint: Option<Subcommand>,
-}
-
-impl ConfigError {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            hint: None,
-        }
-    }
-
-    fn with_hint(mut self, sub: Subcommand) -> Self {
-        self.hint = Some(sub);
-        self
-    }
-
-    pub(crate) fn message(&self) -> &str {
-        &self.message
-    }
-}
-
-pub(crate) fn validate(command: Command) -> Result<RunMode, ConfigError> {
+pub(crate) fn validate(command: Command) -> Result<RunMode, CliError> {
     validate_with_euid(command, effective_uid())
 }
 
-pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode, ConfigError> {
+pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode, CliError> {
     let mode = match command {
         Command::Serve(args) => {
             RunMode::Serve(validate_serve(args).map_err(|e| e.with_hint(Subcommand::Serve))?)
@@ -67,11 +43,11 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
         Command::Check(args) => {
             RunMode::Check(validate_check(args).map_err(|e| e.with_hint(Subcommand::Check))?)
         }
-        Command::Help(_) => return Err(ConfigError::new("help command is not a runnable mode")),
+        Command::Help(_) => return Err(CliError::new("help command is not a runnable mode")),
     };
 
     if euid == 0 {
-        return Err(ConfigError::new(
+        return Err(CliError::new(
             "refusing to run as root; run buffetcar as an unprivileged service user",
         ));
     }
@@ -89,7 +65,7 @@ pub(crate) fn write_banner(config: &ServeConfig, mut err: impl Write) -> io::Res
     Ok(())
 }
 
-fn validate_serve(args: ServeArgs) -> Result<ServeConfig, ConfigError> {
+fn validate_serve(args: ServeArgs) -> Result<ServeConfig, CliError> {
     Ok(ServeConfig {
         root: validate_root(args.root)?,
         listen: validate_listen(args.listen)?,
@@ -98,10 +74,10 @@ fn validate_serve(args: ServeArgs) -> Result<ServeConfig, ConfigError> {
     })
 }
 
-fn validate_check(args: CheckArgs) -> Result<CheckConfig, ConfigError> {
+fn validate_check(args: CheckArgs) -> Result<CheckConfig, CliError> {
     let root = validate_root(args.root)?;
     if args.selectors.is_empty() {
-        return Err(ConfigError::new("check requires at least one selector"));
+        return Err(CliError::new("check requires at least one selector"));
     }
     Ok(CheckConfig {
         root,
@@ -109,10 +85,10 @@ fn validate_check(args: CheckArgs) -> Result<CheckConfig, ConfigError> {
     })
 }
 
-fn validate_root(root: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
-    let root = root.ok_or_else(|| ConfigError::new("--root is required"))?;
+fn validate_root(root: Option<PathBuf>) -> Result<PathBuf, CliError> {
+    let root = root.ok_or_else(|| CliError::new("--root is required"))?;
     if !root.is_absolute() {
-        return Err(ConfigError::new(format!(
+        return Err(CliError::new(format!(
             "--root '{}': not an absolute path",
             root.display()
         )));
@@ -120,15 +96,15 @@ fn validate_root(root: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
     let root = normalize_root(&root);
 
     let metadata = fs::symlink_metadata(&root)
-        .map_err(|_| ConfigError::new(format!("--root '{}': not a directory", root.display())))?;
+        .map_err(|_| CliError::new(format!("--root '{}': not a directory", root.display())))?;
     if metadata.file_type().is_symlink() {
-        return Err(ConfigError::new(format!(
+        return Err(CliError::new(format!(
             "--root '{}': final path component is a symlink",
             root.display()
         )));
     }
     if !metadata.is_dir() {
-        return Err(ConfigError::new(format!(
+        return Err(CliError::new(format!(
             "--root '{}': not a directory",
             root.display()
         )));
@@ -141,10 +117,10 @@ fn normalize_root(root: &Path) -> PathBuf {
     root.components().collect()
 }
 
-fn validate_listen(listen: Option<String>) -> Result<SocketAddr, ConfigError> {
+fn validate_listen(listen: Option<String>) -> Result<SocketAddr, CliError> {
     match listen {
         Some(raw) => raw.parse::<SocketAddr>().map_err(|_| {
-            ConfigError::new(format!(
+            CliError::new(format!(
                 "invalid --listen '{raw}': expected an IP socket address"
             ))
         }),
@@ -152,11 +128,11 @@ fn validate_listen(listen: Option<String>) -> Result<SocketAddr, ConfigError> {
     }
 }
 
-fn validate_workers(workers: Option<String>) -> Result<usize, ConfigError> {
+fn validate_workers(workers: Option<String>) -> Result<usize, CliError> {
     parse_range("--workers", workers, DEFAULT_WORKERS, 1, 1024, "")
 }
 
-fn validate_write_timeout(timeout: Option<String>) -> Result<u64, ConfigError> {
+fn validate_write_timeout(timeout: Option<String>) -> Result<u64, CliError> {
     parse_range(
         "--write-timeout",
         timeout,
@@ -174,7 +150,7 @@ fn parse_range<T>(
     min: T,
     max: T,
     suffix: &str,
-) -> Result<T, ConfigError>
+) -> Result<T, CliError>
 where
     T: Copy + Ord + std::str::FromStr + std::fmt::Display,
 {
@@ -185,7 +161,7 @@ where
     let parsed = raw.parse::<T>().ok();
     match parsed {
         Some(value) if value >= min && value <= max => Ok(value),
-        _ => Err(ConfigError::new(format!(
+        _ => Err(CliError::new(format!(
             "{flag} '{raw}': expected a value from {min} to {max}{suffix}"
         ))),
     }
