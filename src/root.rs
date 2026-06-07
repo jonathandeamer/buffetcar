@@ -645,7 +645,12 @@ mod tests {
     fn diagnostic_directory_listing_rejects_non_world_readable_directory() {
         let site = TempSite::new();
         site.write("hidden/inside.txt", b"inside\n");
-        site.chmod("hidden", 0o111);
+        // World-executable but not world-readable: a file inside is still
+        // resolvable (search permission suffices) but the directory cannot be
+        // listed. The owner read bit matters on OpenBSD, which lacks O_PATH and
+        // traverses components with O_RDONLY (that open needs read on the dir);
+        // an execute-only 0o111 would resolve on Linux's O_PATH but not there.
+        site.chmod("hidden", 0o711);
 
         let root = Root::open(site.path()).expect("open root");
         assert!(matches!(

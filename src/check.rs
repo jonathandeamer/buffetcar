@@ -130,7 +130,10 @@ reject: missing.txt: not found
         .expect("create hardlink");
         site.symlink("linked.txt", "link.txt");
         site.write("hidden/inside.txt", b"inside\n");
-        site.chmod("hidden", 0o111);
+        // 0o711, not 0o111: keeps `hidden` world-executable-but-not-world-readable
+        // (the `other` bits are unchanged) while giving the owner read, which
+        // OpenBSD needs to traverse with O_RDONLY. See the resolver tests in root.
+        site.chmod("hidden", 0o711);
 
         let config = CheckConfig {
             root: site.path().to_path_buf(),

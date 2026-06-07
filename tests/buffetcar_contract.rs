@@ -371,7 +371,12 @@ fn rejects_non_world_executable_root() {
 fn does_not_list_non_world_readable_directory() {
     let site = TempSite::new();
     site.write("hidden/inside.txt", b"inside\n");
-    site.dir_mode("hidden", 0o111);
+    // World-executable but not world-readable. Owner read (0o711, not 0o111)
+    // matters on OpenBSD: it lacks O_PATH and traverses with O_RDONLY, which
+    // needs read on the directory; an execute-only dir would not be traversable
+    // there for the (unprivileged) owner. The `other` bits — what the policy
+    // actually inspects — are identical, so every assertion below is unchanged.
+    site.dir_mode("hidden", 0o711);
 
     assert_eq!(respond(site.path(), "hidden/inside.txt"), b"inside\n");
     assert_eq!(respond(site.path(), "hidden"), b"document not found");
