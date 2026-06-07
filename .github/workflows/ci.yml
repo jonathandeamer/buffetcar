@@ -48,12 +48,24 @@ jobs:
           # The VM runs scripts as root, but buffetcar refuses to run as root
           # (a security invariant the check/serve contract tests assert), so run
           # the gate as an unprivileged user that owns the synced workspace.
+          #
+          # Use doas (OpenBSD base) rather than su to drop privileges: OpenBSD su
+          # treats `-c` as a login-class, not a command, so `su -l ci -c "cmd"`
+          # silently falls into an interactive login shell that blocks on stdin.
+          # doas runs the command directly with no shell-parsing ambiguity and
+          # preserves the working directory. HOME/PATH are set explicitly so
+          # cargo has a writable home and finds the toolchain in /usr/local/bin.
           prepare: |
             pkg_add -I rust rust-rustfmt rust-clippy
             useradd -m -s /bin/ksh ci
+            printf 'permit nopass root as ci\n' > /etc/doas.conf
           run: |
+            set -eux
             chown -R ci .
-            su -l ci -c "cd $(pwd) && make check"
+            doas -u ci /usr/bin/env \
+              HOME=/home/ci \
+              PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+              make check < /dev/null
 
   deny:
     name: cargo deny
