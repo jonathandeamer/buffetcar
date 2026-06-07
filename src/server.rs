@@ -54,7 +54,7 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
     crate::sandbox::apply(&config.root).map_err(ServeError::Sandbox)?;
 
     // Bind succeeded: this is the startup-success banner.
-    let _ = config::write_banner(config, &mut banner);
+    let _ = config::write_banner(config, crate::version::version_line(), &mut banner);
 
     serve(
         listener,

@@ -17,6 +17,7 @@ pub(crate) enum Command {
     Serve(ServeArgs),
     Check(CheckArgs),
     Help(HelpArgs),
+    Version,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,6 +77,11 @@ where
     }
 
     let has_help_flag = rest.iter().any(|a| a == "-h" || a == "--help");
+    let has_version_flag = rest.iter().any(|a| a == "-V" || a == "--version");
+
+    if rest.first().and_then(|a| a.to_str()) == Some("version") {
+        return Ok(Command::Version);
+    }
 
     if rest.first().and_then(|a| a.to_str()) == Some("help") {
         let sub = match rest.get(1).and_then(|a| a.to_str()) {
@@ -84,6 +90,10 @@ where
             _ => None,
         };
         return Ok(Command::Help(HelpArgs { subcommand: sub }));
+    }
+
+    if has_version_flag {
+        return Ok(Command::Version);
     }
 
     if has_help_flag {
@@ -271,11 +281,11 @@ impl Styler {
     }
 }
 
-pub(crate) fn general_help(styler: &Styler) -> String {
+pub(crate) fn general_help(styler: &Styler, version_line: &str) -> String {
     format!(
         "\
-buffetcar
-A hardened, single-binary Nex server.
+{version}
+A server for Nex, the minimal smallnet protocol.
 
 {usage_hdr}
     buffetcar [{command_opt}] [{options_opt}]
@@ -289,6 +299,7 @@ For detailed help on a command, run:
     buffetcar help {serve_cmd}
     buffetcar help {check_cmd}
 ",
+        version = version_line,
         usage_hdr = styler.bold("USAGE:"),
         command_opt = styler.green("COMMAND"),
         options_opt = styler.green("OPTIONS"),
@@ -535,6 +546,32 @@ mod tests {
             Ok(Command::Help(HelpArgs {
                 subcommand: Some(Subcommand::Serve)
             }))
+        );
+    }
+
+    #[test]
+    fn parse_version_triggers() {
+        // --version flag
+        assert_eq!(
+            parse(args(&["buffetcar", "--version"])),
+            Ok(Command::Version)
+        );
+        // -V short flag
+        assert_eq!(parse(args(&["buffetcar", "-V"])), Ok(Command::Version));
+        // version subcommand (parity with help subcommand)
+        assert_eq!(parse(args(&["buffetcar", "version"])), Ok(Command::Version));
+    }
+
+    #[test]
+    fn version_flag_wins_over_subcommand_args() {
+        // --version among serve flags should still show version
+        assert_eq!(
+            parse(args(&["buffetcar", "--version", "--root", "/srv"])),
+            Ok(Command::Version)
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "serve", "--version"])),
+            Ok(Command::Version)
         );
     }
 }

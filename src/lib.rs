@@ -9,6 +9,7 @@ mod root;
 mod sandbox;
 mod selector;
 mod server;
+mod version;
 
 #[cfg(test)]
 mod test_support;
@@ -60,11 +61,20 @@ where
         }
     };
 
+    if let cli::Command::Version = command {
+        let _ = writeln!(out, "{}", version::version_line());
+        return 0;
+    }
+
     if let cli::Command::Help(help_args) = command {
         let styler = cli::Styler::new_stdout();
         match help_args.subcommand {
             None => {
-                let _ = write!(out, "{}", cli::general_help(&styler));
+                let _ = write!(
+                    out,
+                    "{}",
+                    cli::general_help(&styler, version::version_line())
+                );
             }
             Some(cli::Subcommand::Serve) => {
                 let _ = write!(out, "{}", cli::serve_help(&styler));
