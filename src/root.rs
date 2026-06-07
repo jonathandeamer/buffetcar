@@ -9,6 +9,13 @@
 //! ever sees normal components and never opens `..` (which could climb above the
 //! root). Whole-path opens and `PathBuf::join`-then-open are never used here.
 
+// `Stat` integer field widths are platform-dependent: macOS/BSD `st_dev` and
+// `st_nlink` are narrower than `u64`, so the `as u64` normalization below is
+// required there, while on Linux those fields are already `u64` and the cast is
+// flagged as unnecessary. Allow the resulting false-positive lint rather than
+// removing casts that other targets need.
+#![allow(clippy::unnecessary_cast)]
+
 use crate::selector::Request;
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags, Stat};
 use rustix::path::Arg;
