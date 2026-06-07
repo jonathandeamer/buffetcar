@@ -1,6 +1,7 @@
 //! Buffetcar Nex server.
 
 mod cli;
+mod config;
 mod listing;
 mod root;
 mod selector;
