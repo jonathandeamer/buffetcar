@@ -39,9 +39,15 @@ const TRAVERSE_DIR: OFlags = OFlags::PATH
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
-#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 const TRAVERSE_DIR: OFlags = OFlags::from_bits_retain(
     (libc::O_SEARCH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32,
+);
+
+// NetBSD uses O_EXEC rather than O_SEARCH for execute-only opens.
+#[cfg(target_os = "netbsd")]
+const TRAVERSE_DIR: OFlags = OFlags::from_bits_retain(
+    (libc::O_EXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32,
 );
 
 #[cfg(not(any(
@@ -133,8 +139,19 @@ impl Root {
         if let Some(child) = self.classify_readable_child(dir, name)? {
             return Ok(Some(child));
         }
+        // Fallback for directories that can't be opened with O_RDONLY (e.g.
+        // execute-only 0o111). Only include the directory if it is also
+        // world-readable (listable): an execute-only directory is traversable
+        // but its existence must not be revealed in listings.
         match self.open_child_dir(dir, name)? {
-            Some(_) => Ok(Some(Child::Dir)),
+            Some(fd) => {
+                let st = fs::fstat(&fd)?;
+                if self.listable(&st) {
+                    Ok(Some(Child::Dir))
+                } else {
+                    Ok(None)
+                }
+            }
             None => Ok(None),
         }
     }
@@ -181,7 +198,7 @@ impl Root {
             return Ok(None);
         }
         match FileType::from_raw_mode(st.st_mode) {
-            FileType::Directory if self.dir_ok(&st) => Ok(Some(Child::Dir)),
+            FileType::Directory if self.listable(&st) => Ok(Some(Child::Dir)),
             FileType::RegularFile if self.file_ok(&st) => Ok(Some(Child::File(fd))),
             _ => Ok(None),
         }
@@ -198,7 +215,13 @@ impl Root {
                 return Ok(None);
             }
             match FileType::from_raw_mode(st.st_mode) {
-                FileType::Directory if self.dir_ok(&st) => return Ok(Some(Resolved::Dir(fd))),
+                FileType::Directory if self.dir_ok(&st) => {
+                    // Drop the PROBE fd and re-open with TRAVERSE_DIR so that
+                    // Resolved::Dir always carries a consistent search-only fd,
+                    // matching the fd returned by the dir_only and fallback paths.
+                    drop(fd);
+                    return self.open_leaf_dir(dir, name);
+                }
                 FileType::RegularFile if self.file_ok(&st) => {
                     return Ok(Some(Resolved::File(fd)));
                 }
