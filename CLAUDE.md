@@ -38,7 +38,7 @@ Outstanding spec items (not yet built; none blocking): a multi-user race **stres
 
 ## Core principle (drives most decisions)
 
-Security and minimalism are co-equal; **when they genuinely conflict, prefer security.** Safety properties are *invariants, not configurable defaults* — there is intentionally no flag/config to serve dotfiles, follow symlinks, change the index name, disable timeouts, or run as root. The resolver is allowed to be more complex than the protocol because check-then-open path validation is unsafe under the multi-user threat model.
+Security and minimalism are co-equal; **when they genuinely conflict, prefer security.** Safety properties are *invariants, not configurable defaults* — there is intentionally no flag/config to serve dotfiles, follow symlinks, change the index name, disable timeouts, or run as root. This extends to *in-tree* config: the Go reference's listing marker files (`.modified`, `.desc`, `.header`) are deliberately not implemented, so no file in the served tree can change listing order or inject listing content — listings stay deterministic and ascending-by-name (re-evaluated and reaffirmed in `docs/2026-06-07-listing-marker-files-decision.md`; don't re-litigate without reading it). The resolver is allowed to be more complex than the protocol because check-then-open path validation is unsafe under the multi-user threat model.
 
 Two consequences that repeatedly matter when editing:
 
