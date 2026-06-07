@@ -72,7 +72,10 @@ fn check_reports_policy_reasons() {
     .expect("create hardlink");
     site.symlink("linked.txt", "link.txt");
     site.write("hidden/inside.txt", b"inside\n");
-    site.chmod("hidden", 0o111);
+    // 0o711, not 0o111: owner read lets OpenBSD's O_RDONLY traversal reach the
+    // file inside (it has no O_PATH). The `other` bits are unchanged, so `hidden`
+    // is still world-executable-but-not-world-readable for policy purposes.
+    site.chmod("hidden", 0o711);
 
     let output = buffetcar(&[
         "check",
