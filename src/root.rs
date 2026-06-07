@@ -51,26 +51,15 @@ const TRAVERSE_DIR: OFlags = OFlags::from_bits_retain(
     (libc::O_SEARCH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32,
 );
 
-// OpenBSD does not support execute-only directory descriptors (no O_PATH/O_SEARCH).
-// We fall back to O_RDONLY. This means directories in the served tree on OpenBSD
-// must be readable by the daemon process for traversal to succeed, unlike on other OSs
-// where execute-only permissions are sufficient.
-#[cfg(target_os = "openbsd")]
-const TRAVERSE_DIR: OFlags = OFlags::RDONLY
-    .union(OFlags::DIRECTORY)
-    .union(OFlags::NOFOLLOW)
-    .union(OFlags::CLOEXEC);
-
 #[cfg(not(any(
     target_os = "linux",
     target_os = "android",
     target_os = "macos",
     target_os = "freebsd",
     target_os = "netbsd",
-    target_os = "openbsd",
 )))]
 compile_error!(
-    "buffetcar requires O_PATH, O_SEARCH, or O_RDONLY (OpenBSD) so directories can be traversed"
+    "buffetcar requires O_PATH or O_SEARCH so execute-only directories can be traversed"
 );
 
 fn open_traverse_dir<D: AsFd, P: Arg>(dir: D, path: P) -> io::Result<OwnedFd> {
