@@ -6,7 +6,7 @@
 //! symlink, so the lexical parent of a component is always its physical parent.
 
 /// Hardcoded selector byte bound (spec: "Networking And Resource Bounds").
-const MAX_SELECTOR_BYTES: usize = 1024;
+pub(crate) const MAX_SELECTOR_BYTES: usize = 1024;
 
 /// A normalized request: normal path components in order, plus whether a
 /// trailing slash expressed directory intent (which forbids a regular-file

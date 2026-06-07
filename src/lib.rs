@@ -3,9 +3,12 @@
 mod check;
 mod cli;
 mod config;
+mod conn;
 mod listing;
 mod root;
+mod sandbox;
 mod selector;
+mod server;
 
 use root::{Resolved, Root};
 use std::ffi::OsString;
@@ -31,7 +34,7 @@ pub fn serve_selector(root: &Path, selector: &str) -> io::Result<Vec<u8>> {
 
     match root.resolve(&request)? {
         Some(Resolved::File(fd)) => read_file(fd),
-        Some(Resolved::Dir(fd)) => listing::serve(&root, fd),
+        Some(Resolved::Dir(fd)) => listing::serve(&root, &fd),
         None => Ok(NOT_FOUND.to_vec()),
     }
 }
@@ -64,14 +67,13 @@ where
                 2
             }
         },
-        Ok(config::RunMode::Serve(config)) => {
-            let _ = config::write_banner(&config, &mut *err);
-            let _ = writeln!(
-                err,
-                "error: serve networking is not implemented in this build"
-            );
-            2
-        }
+        Ok(config::RunMode::Serve(config)) => match server::run(&config, &mut *err) {
+            Ok(()) => 0,
+            Err(error) => {
+                let _ = writeln!(err, "error: {}", error.message());
+                1
+            }
+        },
         Err(error) => {
             let _ = writeln!(err, "error: {}", error.message());
             2
