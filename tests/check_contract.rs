@@ -232,3 +232,47 @@ fn make_chain_public(root: &Path, leaf: &Path) {
         dir = d.parent();
     }
 }
+
+#[test]
+fn help_screen_triggers_and_content() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    // General help
+    let code = buffetcar::run_with_io(vec!["buffetcar", "help"], &mut out, &mut err);
+    assert_eq!(code, 0);
+    let out_str = String::from_utf8(out).unwrap();
+    assert!(out_str.contains("A hardened, single-binary Nex server."));
+    assert!(out_str.contains("USAGE:"));
+    assert!(out_str.contains("COMMANDS"));
+    assert!(!out_str.contains("0.1.0")); // No hardcoded version number
+
+    // Serve help
+    let mut out_serve = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar", "serve", "-h"], &mut out_serve, &mut err);
+    assert_eq!(code, 0);
+    let out_serve_str = String::from_utf8(out_serve).unwrap();
+    assert!(out_serve_str.contains("Start the Nex server daemon."));
+    assert!(out_serve_str.contains("--root <PATH>"));
+    assert!(out_serve_str.contains("between 1 and 1024"));
+
+    // Check help
+    let mut out_check = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar", "help", "check"], &mut out_check, &mut err);
+    assert_eq!(code, 0);
+    let out_check_str = String::from_utf8(out_check).unwrap();
+    assert!(out_check_str.contains("Run local diagnostics"));
+    assert!(out_check_str.contains("POLICY RULES VERIFIED:"));
+}
+
+#[test]
+fn error_output_includes_help_hint() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar", "--invalid-flag"], &mut out, &mut err);
+    assert_eq!(code, 2);
+    let err_str = String::from_utf8(err).unwrap();
+    assert!(err_str.contains("error: unknown argument '--invalid-flag'"));
+    assert!(err_str.contains("usage: buffetcar"));
+    assert!(err_str.contains("For detailed help, run: buffetcar --help"));
+}
