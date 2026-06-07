@@ -47,9 +47,9 @@ fn bind_reason(err: &io::Error) -> String {
 /// startup error; the banner is written only after a successful bind.
 pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), ServeError> {
     let root = Root::open(&config.root).map_err(ServeError::Root)?;
-    crate::sandbox::apply();
     let listener =
         TcpListener::bind(config.listen).map_err(|err| ServeError::Bind(config.listen, err))?;
+    crate::sandbox::apply(&config.root);
 
     // Bind succeeded: this is the startup-success banner.
     let _ = config::write_banner(config, &mut banner);
