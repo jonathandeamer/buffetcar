@@ -18,14 +18,17 @@ pub(crate) struct Request {
 }
 
 /// Parse a selector into a `Request`, or `None` when it is unavailable by policy:
-/// over the byte bound, containing a NUL, naming a dotfile component, or escaping
-/// above the root via unbalanced `..`.
+/// over the byte bound, containing a NUL or CR, naming a dotfile component, or
+/// escaping above the root via unbalanced `..`.
 pub(crate) fn parse(selector: &str) -> Option<Request> {
+    // Strip exactly one trailing CR before the length check so that a 1024-byte
+    // path sent with Windows CRLF line endings (1025 wire bytes) is accepted.
+    let selector = selector.strip_suffix('\r').unwrap_or(selector);
     if selector.len() > MAX_SELECTOR_BYTES {
         return None;
     }
-    let selector = selector.strip_suffix('\r').unwrap_or(selector);
-    if selector.contains('\0') {
+    // Reject NUL and any remaining CR (e.g. double-CR from a misbehaving client).
+    if selector.contains('\0') || selector.contains('\r') {
         return None;
     }
 
@@ -102,10 +105,16 @@ mod tests {
         assert_eq!(parse(&oversized), None);
         let at_limit = "a".repeat(1024);
         assert_eq!(parse(&at_limit), req(&[&at_limit], false));
+        // 1024-byte path + trailing CR = 1025 wire bytes: CR is stripped first,
+        // leaving 1024 bytes at the limit → accepted.
+        let at_limit_cr = format!("{}\r", "a".repeat(1024));
+        assert_eq!(parse(&at_limit_cr), req(&[&"a".repeat(1024)], false));
     }
 
     #[test]
     fn tolerates_one_trailing_carriage_return() {
         assert_eq!(parse("plain.txt\r"), req(&["plain.txt"], false));
+        // double-CR: stripping one leaves an embedded CR → rejected
+        assert_eq!(parse("plain.txt\r\r"), None);
     }
 }
