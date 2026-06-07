@@ -43,7 +43,9 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
         Command::Check(args) => {
             RunMode::Check(validate_check(args).map_err(|e| e.with_hint(Subcommand::Check))?)
         }
-        Command::Help(_) => return Err(CliError::new("help command is not a runnable mode")),
+        Command::Help(_) | Command::Version => {
+            return Err(CliError::new("help/version command is not a runnable mode"))
+        }
     };
 
     if euid == 0 {
@@ -55,7 +57,12 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
     Ok(mode)
 }
 
-pub(crate) fn write_banner(config: &ServeConfig, mut err: impl Write) -> io::Result<()> {
+pub(crate) fn write_banner(
+    config: &ServeConfig,
+    version_line: &str,
+    mut err: impl Write,
+) -> io::Result<()> {
+    writeln!(err, "{version_line}")?;
     #[cfg(target_os = "openbsd")]
     writeln!(
         err,
@@ -465,21 +472,29 @@ mod tests {
             write_timeout: Duration::from_secs(DEFAULT_WRITE_TIMEOUT_SECS),
         };
         let mut stderr = Vec::new();
-        write_banner(&config, &mut stderr).expect("write banner");
+        write_banner(&config, "buffetcar 0.1.0", &mut stderr).expect("write banner");
         let stderr = String::from_utf8(stderr).expect("banner utf8");
+
+        assert!(
+            stderr.starts_with("buffetcar 0.1.0\n"),
+            "banner should start with version line"
+        );
 
         #[cfg(target_os = "openbsd")]
         assert_eq!(
             stderr,
             format!(
-                "serving {} on 127.0.0.1:1900 (sandbox: pledge/unveil active)\n",
+                "buffetcar 0.1.0\nserving {} on 127.0.0.1:1900 (sandbox: pledge/unveil active)\n",
                 site.path().display()
             )
         );
         #[cfg(not(target_os = "openbsd"))]
         assert_eq!(
             stderr,
-            format!("serving {} on 127.0.0.1:1900\n", site.path().display())
+            format!(
+                "buffetcar 0.1.0\nserving {} on 127.0.0.1:1900\n",
+                site.path().display()
+            )
         );
     }
 }
