@@ -39,15 +39,9 @@ const TRAVERSE_DIR: OFlags = OFlags::PATH
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd"))]
 const TRAVERSE_DIR: OFlags = OFlags::from_bits_retain(
     (libc::O_SEARCH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32,
-);
-
-// NetBSD uses O_EXEC rather than O_SEARCH for execute-only opens.
-#[cfg(target_os = "netbsd")]
-const TRAVERSE_DIR: OFlags = OFlags::from_bits_retain(
-    (libc::O_EXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32,
 );
 
 #[cfg(not(any(
