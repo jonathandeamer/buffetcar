@@ -20,6 +20,7 @@ use std::time::Duration;
 pub(crate) enum ServeError {
     Bind(SocketAddr, io::Error),
     Root(io::Error),
+    Sandbox(io::Error),
     Serve(io::Error),
 }
 
@@ -28,6 +29,7 @@ impl ServeError {
         match self {
             ServeError::Bind(addr, err) => format!("could not bind {addr}: {}", bind_reason(err)),
             ServeError::Root(err) => format!("could not open root: {err}"),
+            ServeError::Sandbox(err) => format!("could not apply sandbox: {err}"),
             ServeError::Serve(err) => format!("server error: {err}"),
         }
     }
@@ -47,9 +49,9 @@ fn bind_reason(err: &io::Error) -> String {
 /// startup error; the banner is written only after a successful bind.
 pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), ServeError> {
     let root = Root::open(&config.root).map_err(ServeError::Root)?;
-    crate::sandbox::apply();
     let listener =
         TcpListener::bind(config.listen).map_err(|err| ServeError::Bind(config.listen, err))?;
+    crate::sandbox::apply(&config.root).map_err(ServeError::Sandbox)?;
 
     // Bind succeeded: this is the startup-success banner.
     let _ = config::write_banner(config, &mut banner);
