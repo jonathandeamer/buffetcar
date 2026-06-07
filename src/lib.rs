@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod listing;
 mod root;
+mod sandbox;
 mod selector;
 
 use root::{Resolved, Root};
