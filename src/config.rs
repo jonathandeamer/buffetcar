@@ -56,6 +56,7 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
     let mode = match command {
         Command::Serve(args) => RunMode::Serve(validate_serve(args)?),
         Command::Check(args) => RunMode::Check(validate_check(args)?),
+        Command::Help(_) => return Err(ConfigError::new("help command is not a runnable mode")),
     };
 
     if euid == 0 {
@@ -68,23 +69,11 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
 }
 
 pub(crate) fn write_banner(config: &ServeConfig, mut err: impl Write) -> io::Result<()> {
-    writeln!(err, "buffetcar {}", env!("CARGO_PKG_VERSION"))?;
-    writeln!(err, "  root:     {}", config.root.display())?;
-    writeln!(err, "  listen:   {}", config.listen)?;
-    writeln!(err, "  workers:  {}", config.workers)?;
     writeln!(
         err,
-        "  timeouts: read {}s, write {}s",
-        READ_TIMEOUT_SECS,
-        config.write_timeout.as_secs()
-    )?;
-    writeln!(
-        err,
-        "  policy:   no dotfiles, symlinks, hardlinks, special files, or mount crossing"
-    )?;
-    writeln!(
-        err,
-        "  sandbox:  fd-relative containment (platform sandbox unavailable)"
+        "serving {} on {}",
+        config.root.display(),
+        config.listen
     )?;
     Ok(())
 }
@@ -485,16 +474,9 @@ mod tests {
         write_banner(&config, &mut stderr).expect("write banner");
         let stderr = String::from_utf8(stderr).expect("banner utf8");
 
-        assert!(stderr.contains("buffetcar 0.1.0\n"));
-        assert!(stderr.contains(&format!("  root:     {}\n", site.path().display())));
-        assert!(stderr.contains("  listen:   127.0.0.1:1900\n"));
-        assert!(stderr.contains("  workers:  128\n"));
-        assert!(stderr.contains("  timeouts: read 5s, write 30s\n"));
-        assert!(stderr.contains(
-            "  policy:   no dotfiles, symlinks, hardlinks, special files, or mount crossing\n"
-        ));
-        assert!(
-            stderr.contains("  sandbox:  fd-relative containment (platform sandbox unavailable)\n")
+        assert_eq!(
+            stderr,
+            format!("serving {} on 127.0.0.1:1900\n", site.path().display())
         );
     }
 
