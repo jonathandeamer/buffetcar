@@ -34,7 +34,7 @@ The plan of record is **`docs/superpowers/specs/2026-06-06-multi-user-nex-server
 
 That design is now **implemented**. The earlier static-site choices it reversed are gone: `cap-std` has been removed in favour of an explicit fd-relative resolver (`rustix` `openat` + `O_NOFOLLOW` + `fstat`; `openat2` is Linux-only optional hardening), the `serve`/`check` CLI is hand-parsed instead of using `clap`, and resolution is split across `selector` + `root` (+ `listing`). The daemon (`server::run`) opens the root **once at startup** and shares it across a fixed worker-thread pool. `serve_selector(root: &Path, selector: &str) -> io::Result<Vec<u8>>` survives as a thin test/library wrapper that opens a `Root` per call.
 
-Outstanding spec items (not yet built; none blocking): a **README** stating the publishing rules in `check`'s terms, and the **OpenBSD `pledge`/`unveil`** sandbox (out of scope until the resolver supports OpenBSD; `sandbox::apply()` is a deliberate no-op everywhere today).
+There are no outstanding spec items: both the **README** stating the publishing rules and the **OpenBSD `pledge`/`unveil`** sandbox are now fully implemented (with OpenBSD target compatibility verified in CI).
 
 ## Core principle (drives most decisions)
 
