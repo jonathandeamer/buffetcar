@@ -146,10 +146,10 @@ OPTIONS:
                             * 0.0.0.0:1900   - All interfaces (accessible over network).
                             * <IP>:1900      - Bind to specific network card or VPN (e.g. Tailscale).
 
-    --workers <N>           Number of worker threads (1..1024, default: 128).
+    --workers <N>           Number of worker threads (between 1 and 1024, default: 128).
                             Limits the maximum concurrent connections the server handles.
 
-    --write-timeout <SECS>  Socket write timeout in seconds (1..300, default: 30).
+    --write-timeout <SECS>  Socket write timeout in seconds (between 1 and 300, default: 30).
                             Stalled connections are dropped after this time.
 ```
 
