@@ -3,6 +3,7 @@
 mod check;
 mod cli;
 mod config;
+mod conn;
 mod listing;
 mod root;
 mod sandbox;
