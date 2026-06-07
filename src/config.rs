@@ -56,6 +56,7 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
     let mode = match command {
         Command::Serve(args) => RunMode::Serve(validate_serve(args)?),
         Command::Check(args) => RunMode::Check(validate_check(args)?),
+        Command::Help(_) => return Err(ConfigError::new("help command is not a runnable mode")),
     };
 
     if euid == 0 {

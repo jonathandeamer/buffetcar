@@ -1,10 +1,22 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Subcommand {
+    Serve,
+    Check,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct HelpArgs {
+    pub(crate) subcommand: Option<Subcommand>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
     Serve(ServeArgs),
     Check(CheckArgs),
+    Help(HelpArgs),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -51,6 +63,41 @@ where
     let mut args = args.into_iter().map(Into::into);
     let _program = args.next();
     let mut rest: Vec<OsString> = args.collect();
+
+    let has_help_flag = rest.iter().any(|a| a == "-h" || a == "--help");
+
+    if rest.first().and_then(|a| a.to_str()) == Some("help") {
+        let sub = match rest.get(1).and_then(|a| a.to_str()) {
+            Some("serve") => Some(Subcommand::Serve),
+            Some("check") => Some(Subcommand::Check),
+            _ => None,
+        };
+        return Ok(Command::Help(HelpArgs { subcommand: sub }));
+    }
+
+    if has_help_flag {
+        let first_str = rest.first().and_then(|a| a.to_str());
+        let sub = match first_str {
+            Some("check") => Some(Subcommand::Check),
+            Some("serve") => Some(Subcommand::Serve),
+            _ => {
+                if rest.iter().any(|a| a.to_str() == Some("check")) {
+                    Some(Subcommand::Check)
+                } else if rest.iter().any(|a| a.to_str() == Some("serve"))
+                    || (rest
+                        .iter()
+                        .any(|a| a.to_str().is_some_and(|s| s.starts_with("--")))
+                        && rest.iter().all(|a| a.to_str() != Some("check"))
+                        && rest.len() > 1)
+                {
+                    Some(Subcommand::Serve)
+                } else {
+                    None
+                }
+            }
+        };
+        return Ok(Command::Help(HelpArgs { subcommand: sub }));
+    }
 
     let mode = match rest.first().and_then(|arg| arg.to_str()) {
         Some("serve") => {
@@ -271,5 +318,57 @@ mod tests {
         ]))
         .unwrap_err();
         assert_eq!(err.message(), "unknown argument '--listen' for check");
+    }
+
+    #[test]
+    fn parse_help_triggers() {
+        assert_eq!(
+            parse(args(&["buffetcar", "help"])),
+            Ok(Command::Help(HelpArgs { subcommand: None }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "--help"])),
+            Ok(Command::Help(HelpArgs { subcommand: None }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "-h"])),
+            Ok(Command::Help(HelpArgs { subcommand: None }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "help", "serve"])),
+            Ok(Command::Help(HelpArgs {
+                subcommand: Some(Subcommand::Serve)
+            }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "serve", "--help"])),
+            Ok(Command::Help(HelpArgs {
+                subcommand: Some(Subcommand::Serve)
+            }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "help", "check"])),
+            Ok(Command::Help(HelpArgs {
+                subcommand: Some(Subcommand::Check)
+            }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "check", "-h"])),
+            Ok(Command::Help(HelpArgs {
+                subcommand: Some(Subcommand::Check)
+            }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "--help", "check"])),
+            Ok(Command::Help(HelpArgs {
+                subcommand: Some(Subcommand::Check)
+            }))
+        );
+        assert_eq!(
+            parse(args(&["buffetcar", "--root", "/srv", "-h"])),
+            Ok(Command::Help(HelpArgs {
+                subcommand: Some(Subcommand::Serve)
+            }))
+        );
     }
 }
