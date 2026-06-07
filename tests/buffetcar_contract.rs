@@ -208,6 +208,8 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
 
     let stop = Arc::new(AtomicBool::new(false));
     let failures: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let file_observations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dir_observations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     thread::scope(|scope| {
         // Mutator: cycle `target` through file / symlink / FIFO / directory.
@@ -231,16 +233,25 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
         let mut readers = Vec::new();
         for _ in 0..READERS {
             let failures = Arc::clone(&failures);
+            let file_observations = Arc::clone(&file_observations);
+            let dir_observations = Arc::clone(&dir_observations);
             let root = root.clone();
             readers.push(scope.spawn(move || {
                 for _ in 0..REQUESTS {
                     match buffetcar::serve_selector(&root, "target") {
                         Ok(body) => {
+                            if body == b"SAFE\n" {
+                                file_observations.fetch_add(1, Ordering::Relaxed);
+                            } else if body == b"=> child.txt\n" {
+                                dir_observations.fetch_add(1, Ordering::Relaxed);
+                            }
                             if !is_allowed(&body) {
                                 failures.lock().unwrap().push(body);
                             }
                         }
                         Err(e) => {
+                            // serve_selector maps lookup failures to Ok(NOT_FOUND); a raw Err here is
+                            // unlikely, but we check and ignore NotFound defensively.
                             if e.kind() != std::io::ErrorKind::NotFound {
                                 failures
                                     .lock()
@@ -267,6 +278,17 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
             .iter()
             .map(|b| String::from_utf8_lossy(b).into_owned())
             .collect::<Vec<_>>()
+    );
+
+    let file_obs = file_observations.load(Ordering::Relaxed);
+    let dir_obs = dir_observations.load(Ordering::Relaxed);
+    assert!(
+        file_obs > 0,
+        "race test warning: readers never observed the safe file variant (file_obs = 0)"
+    );
+    assert!(
+        dir_obs > 0,
+        "race test warning: readers never observed the directory listing variant (dir_obs = 0)"
     );
 }
 
