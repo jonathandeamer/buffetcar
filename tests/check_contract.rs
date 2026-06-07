@@ -128,26 +128,25 @@ fn invalid_listen_returns_two_before_serve_networking_guard() {
 }
 
 #[test]
-fn serve_validates_config_and_stops_before_networking() {
+fn serve_reports_bind_conflict_with_actionable_error() {
     let site = TempSite::new();
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy port");
+    let addr = occupied.local_addr().expect("addr");
+
     let output = buffetcar(&[
         "serve",
         "--root",
         site.path().to_str().expect("utf8 temp path"),
-        "--workers",
-        "1",
-        "--write-timeout",
-        "1",
+        "--listen",
+        &addr.to_string(),
     ]);
 
-    assert_eq!(output.status.code(), Some(2), "output: {output:?}");
+    assert_eq!(output.status.code(), Some(1), "output: {output:?}");
     assert_eq!(stdout(&output), "");
-    let err = stderr(&output);
-    assert!(err.contains("buffetcar 0.1.0\n"));
-    assert!(err.contains("  listen:   127.0.0.1:1900\n"));
-    assert!(err.contains("  workers:  1\n"));
-    assert!(err.contains("  timeouts: read 5s, write 1s\n"));
-    assert!(err.ends_with("error: serve networking is not implemented in this build\n"));
+    assert_eq!(
+        stderr(&output),
+        format!("error: could not bind {addr}: address already in use\n")
+    );
 }
 
 fn buffetcar(args: &[&str]) -> Output {
