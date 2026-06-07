@@ -49,7 +49,7 @@ Two consequences that repeatedly matter when editing:
 
 Default-suite tests (all run by `make check`):
 
-- **Module unit tests** (`#[cfg(test)] mod tests` inside `src/*.rs`) — closest to the code; cover the resolver, selector parsing, config validation, `check` diagnostics, per-connection handling (`conn`), and the worker pool (`server`, which binds ephemeral `127.0.0.1:0` ports and drives real sockets).
+- **Module unit tests** (`#[cfg(test)] mod tests` inside `src/*.rs`) — closest to the code; cover the resolver, selector parsing, config validation, `check` diagnostics, per-connection handling (`conn`), and the worker pool (`server`, which binds ephemeral `127.0.0.1:0` ports and drives real sockets). Shared filesystem scaffolding lives in `src/test_support.rs` (a `#[cfg(test)]` module exposing `TempSite`, which builds a throwaway world-readable tree and cleans up on drop) — reuse it (`use crate::test_support::TempSite;`) rather than re-adding a per-module copy.
 - **`tests/buffetcar_contract.rs`** — buffetcar's *own* policy contract over `serve_selector`: dotfile rejection, symlink-escape rejection, listing rules, balanced-`..` handling, mode/hardlink/special-file/device policy, listing bounds, etc.
 - **`tests/check_contract.rs`** — black-box tests of the compiled binary's `check` and `serve` startup behavior (stdout/stderr, exit codes, bind-conflict error).
 - **`tests/architecture.rs`** — guards the request path against whole-path opens and selector `.join(` (see Core principle).
