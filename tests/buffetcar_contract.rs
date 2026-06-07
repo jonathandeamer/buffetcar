@@ -191,6 +191,7 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::{Duration, Instant};
 
     let site = TempSite::new();
     let root = site.path().to_path_buf();
@@ -204,7 +205,15 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
     fs::write(&secret, b"SECRET\n").expect("write outside secret");
 
     const READERS: usize = 3;
+    // Minimum stress load per reader. Readers keep going past this until every
+    // observable variant has been seen (see below), so the count only sets a
+    // floor on how hard the safety assertion is exercised.
     const REQUESTS: usize = 2000;
+    // Upper bound on how long readers wait for the remaining variants to be
+    // observed. Far longer than the few milliseconds it normally takes; if it
+    // ever elapses the positive-observation assertions fail loudly rather than
+    // the test hanging.
+    const OBSERVE_DEADLINE: Duration = Duration::from_secs(10);
 
     let stop = Arc::new(AtomicBool::new(false));
     let failures: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -237,7 +246,9 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
             let dir_observations = Arc::clone(&dir_observations);
             let root = root.clone();
             readers.push(scope.spawn(move || {
-                for _ in 0..REQUESTS {
+                let deadline = Instant::now() + OBSERVE_DEADLINE;
+                let mut done = 0usize;
+                loop {
                     match buffetcar::serve_selector(&root, "target") {
                         Ok(body) => {
                             if body == b"SAFE\n" {
@@ -259,6 +270,20 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
                                     .push(format!("Err: {e}").into_bytes());
                             }
                         }
+                    }
+                    done += 1;
+                    // Run the minimum stress load, then keep going until both the
+                    // safe-file and directory-listing variants have been observed
+                    // (by any reader) so the positive-observation assertions below
+                    // can't lose the race on a fast runner. The deadline bounds the
+                    // wait if a variant is somehow never observed.
+                    let observed_all = file_observations.load(Ordering::Relaxed) > 0
+                        && dir_observations.load(Ordering::Relaxed) > 0;
+                    if done >= REQUESTS && observed_all {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        break;
                     }
                 }
             }));
