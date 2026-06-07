@@ -87,27 +87,9 @@ where
     }
 
     if has_help_flag {
-        let first_str = rest.first().and_then(|a| a.to_str());
-        let sub = match first_str {
-            Some("check") => Some(Subcommand::Check),
-            Some("serve") => Some(Subcommand::Serve),
-            _ => {
-                if rest.iter().any(|a| a.to_str() == Some("check")) {
-                    Some(Subcommand::Check)
-                } else if rest.iter().any(|a| a.to_str() == Some("serve"))
-                    || (rest
-                        .iter()
-                        .any(|a| a.to_str().is_some_and(|s| s.starts_with("--")))
-                        && rest.iter().all(|a| a.to_str() != Some("check"))
-                        && rest.len() > 1)
-                {
-                    Some(Subcommand::Serve)
-                } else {
-                    None
-                }
-            }
-        };
-        return Ok(Command::Help(HelpArgs { subcommand: sub }));
+        return Ok(Command::Help(HelpArgs {
+            subcommand: infer_help_subcommand(&rest),
+        }));
     }
 
     let mode = match rest.first().and_then(|arg| arg.to_str()) {
@@ -130,6 +112,32 @@ where
             .map(Command::Check)
             .map_err(|e| e.with_hint(Subcommand::Check)),
     }
+}
+
+/// Decide which subcommand's help to show when `-h`/`--help` appears among
+/// otherwise-unstructured args. An explicit leading `serve`/`check` wins; failing
+/// that, a `check` token anywhere selects check. Otherwise we default to serve
+/// help whenever the args already look like serve flags (more than one arg and at
+/// least one `--flag`), mirroring the parser's "unknown leading token means serve"
+/// default. Anything else falls back to the general help.
+fn infer_help_subcommand(rest: &[OsString]) -> Option<Subcommand> {
+    match rest.first().and_then(|a| a.to_str()) {
+        Some("check") => return Some(Subcommand::Check),
+        Some("serve") => return Some(Subcommand::Serve),
+        _ => {}
+    }
+    if rest.iter().any(|a| a.to_str() == Some("check")) {
+        return Some(Subcommand::Check);
+    }
+    let has_serve = rest.iter().any(|a| a.to_str() == Some("serve"));
+    let looks_like_serve_flags = rest.len() > 1
+        && rest
+            .iter()
+            .any(|a| a.to_str().is_some_and(|s| s.starts_with("--")));
+    if has_serve || looks_like_serve_flags {
+        return Some(Subcommand::Serve);
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
