@@ -56,14 +56,6 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
 }
 
 pub(crate) fn write_banner(config: &ServeConfig, mut err: impl Write) -> io::Result<()> {
-    #[cfg(target_os = "openbsd")]
-    writeln!(
-        err,
-        "serving {} on {} (sandbox: pledge/unveil active)",
-        config.root.display(),
-        config.listen
-    )?;
-    #[cfg(not(target_os = "openbsd"))]
     writeln!(
         err,
         "serving {} on {}",
@@ -468,15 +460,6 @@ mod tests {
         write_banner(&config, &mut stderr).expect("write banner");
         let stderr = String::from_utf8(stderr).expect("banner utf8");
 
-        #[cfg(target_os = "openbsd")]
-        assert_eq!(
-            stderr,
-            format!(
-                "serving {} on 127.0.0.1:1900 (sandbox: pledge/unveil active)\n",
-                site.path().display()
-            )
-        );
-        #[cfg(not(target_os = "openbsd"))]
         assert_eq!(
             stderr,
             format!("serving {} on 127.0.0.1:1900\n", site.path().display())
