@@ -10,6 +10,9 @@ mod sandbox;
 mod selector;
 mod server;
 
+#[cfg(test)]
+mod test_support;
+
 use root::{Resolved, Root};
 use std::ffi::OsString;
 use std::fs::File;
@@ -52,15 +55,7 @@ where
     let command = match cli::parse(args) {
         Ok(command) => command,
         Err(error) => {
-            let styler = cli::Styler::new_stderr();
-            let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
-            let _ = write!(err, "{}", cli::USAGE);
-            let help_cmd = match error.hint {
-                Some(cli::Subcommand::Serve) => "buffetcar help serve",
-                Some(cli::Subcommand::Check) => "buffetcar help check",
-                None => "buffetcar --help",
-            };
-            let _ = writeln!(err, "\nFor detailed help, run: {}", styler.bold(help_cmd));
+            print_cli_error(err, error.message(), error.hint);
             return 2;
         }
     };
@@ -100,18 +95,24 @@ where
             }
         },
         Err(error) => {
-            let styler = cli::Styler::new_stderr();
-            let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
-            let _ = write!(err, "{}", cli::USAGE);
-            let help_cmd = match error.hint {
-                Some(cli::Subcommand::Serve) => "buffetcar help serve",
-                Some(cli::Subcommand::Check) => "buffetcar help check",
-                None => "buffetcar --help",
-            };
-            let _ = writeln!(err, "\nFor detailed help, run: {}", styler.bold(help_cmd));
+            print_cli_error(err, error.message(), error.hint);
             2
         }
     }
+}
+
+/// Print a CLI error to stderr: the `error:` line, the usage block, and a
+/// subcommand-scoped "for detailed help" pointer derived from `hint`.
+fn print_cli_error(err: &mut impl Write, message: &str, hint: Option<cli::Subcommand>) {
+    let styler = cli::Styler::new_stderr();
+    let _ = writeln!(err, "{} {}", styler.red_bold("error:"), message);
+    let _ = write!(err, "{}", cli::USAGE);
+    let help_cmd = match hint {
+        Some(cli::Subcommand::Serve) => "buffetcar help serve",
+        Some(cli::Subcommand::Check) => "buffetcar help check",
+        None => "buffetcar --help",
+    };
+    let _ = writeln!(err, "\nFor detailed help, run: {}", styler.bold(help_cmd));
 }
 
 pub(crate) fn read_file(fd: OwnedFd) -> io::Result<Vec<u8>> {
