@@ -2,7 +2,7 @@ use crate::cli::{CheckArgs, Command, ServeArgs};
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub(crate) const DEFAULT_LISTEN: SocketAddr =
@@ -117,6 +117,7 @@ fn validate_root(root: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
             root.display()
         )));
     }
+    let root = normalize_root(&root);
 
     let metadata = fs::symlink_metadata(&root)
         .map_err(|_| ConfigError::new(format!("--root '{}': not a directory", root.display())))?;
@@ -134,6 +135,10 @@ fn validate_root(root: Option<PathBuf>) -> Result<PathBuf, ConfigError> {
     }
 
     Ok(root)
+}
+
+fn normalize_root(root: &Path) -> PathBuf {
+    root.components().collect()
 }
 
 fn validate_listen(listen: Option<String>) -> Result<SocketAddr, ConfigError> {
@@ -334,6 +339,35 @@ mod tests {
         let err = validate_with_euid(
             Command::Serve(ServeArgs {
                 root: Some(link.clone()),
+                listen: None,
+                workers: None,
+                write_timeout: None,
+            }),
+            1000,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.message(),
+            format!(
+                "--root '{}': final path component is a symlink",
+                link.display()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_root_with_trailing_slash() {
+        let site = TempSite::new();
+        let target = site.path().join("target");
+        fs::create_dir(&target).expect("create target dir");
+        let link = site.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).expect("create root symlink");
+        let root = PathBuf::from(format!("{}/", link.display()));
+
+        let err = validate_with_euid(
+            Command::Serve(ServeArgs {
+                root: Some(root),
                 listen: None,
                 workers: None,
                 write_timeout: None,
