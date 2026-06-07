@@ -105,7 +105,8 @@ fn usage_errors_return_two_on_stderr() {
 
     assert_eq!(output.status.code(), Some(2), "output: {output:?}");
     assert_eq!(stdout(&output), "");
-    assert!(stderr(&output).contains("error: --root is required\n"));
+    assert!(stderr(&output).contains("error: --root is required"));
+    assert!(stderr(&output).contains("For detailed help, run: buffetcar help check"));
 }
 
 #[test]
@@ -121,10 +122,9 @@ fn invalid_listen_returns_two_before_serve_networking_guard() {
 
     assert_eq!(output.status.code(), Some(2), "output: {output:?}");
     assert_eq!(stdout(&output), "");
-    assert_eq!(
-        stderr(&output),
-        "error: invalid --listen 'localhost:1900': expected an IP socket address\n"
-    );
+    assert!(stderr(&output)
+        .contains("error: invalid --listen 'localhost:1900': expected an IP socket address"));
+    assert!(stderr(&output).contains("For detailed help, run: buffetcar help serve"));
 }
 
 #[test]
@@ -275,7 +275,7 @@ fn error_output_includes_help_hint() {
     let err_str = String::from_utf8(err).unwrap();
     assert!(err_str.contains("error: unknown argument '--invalid-flag'"));
     assert!(err_str.contains("usage: buffetcar"));
-    assert!(err_str.contains("For detailed help, run: buffetcar --help"));
+    assert!(err_str.contains("For detailed help, run: buffetcar help serve"));
 }
 
 #[test]
