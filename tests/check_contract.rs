@@ -245,11 +245,14 @@ fn help_screen_triggers_and_content() {
     let code = buffetcar::run_with_io(vec!["buffetcar", "help"], &mut out, &mut err);
     assert_eq!(code, 0);
     let out_str = String::from_utf8(out).unwrap();
-    assert!(out_str.contains("A hardened, single-binary Nex server."));
+    assert!(out_str.contains("A server for Nex, the minimal smallnet protocol."));
     assert!(out_str.contains("USAGE:"));
     assert!(out_str.contains("COMMANDS"));
     assert!(out_str.contains("help        Print this message or the help for the given subcommand"));
-    assert!(!out_str.contains("0.1.0")); // No hardcoded version number
+    assert!(
+        out_str.contains("buffetcar "),
+        "help header should include version"
+    );
 
     // Serve help
     let mut out_serve = Vec::new();
@@ -289,6 +292,80 @@ fn bare_run_displays_help_and_exits_zero() {
     assert_eq!(code, 0);
     let out_str = String::from_utf8(out).unwrap();
     assert!(out_str.contains("buffetcar"));
-    assert!(out_str.contains("A hardened, single-binary Nex server."));
+    assert!(out_str.contains("A server for Nex, the minimal smallnet protocol."));
     assert!(out_str.contains("help        Print this message or the help for the given subcommand"));
+}
+#[test]
+fn version_flag_prints_version_and_exits_zero() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar", "--version"], &mut out, &mut err);
+    assert_eq!(code, 0);
+    let out_str = String::from_utf8(out).unwrap();
+    assert!(
+        out_str.starts_with("buffetcar "),
+        "version output should start with 'buffetcar ': got '{out_str}'"
+    );
+    assert!(
+        out_str.ends_with('\n'),
+        "version output should end with newline"
+    );
+    assert!(err.is_empty(), "version should produce no stderr");
+}
+
+#[test]
+fn version_short_flag_prints_version() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar", "-V"], &mut out, &mut err);
+    assert_eq!(code, 0);
+    let out_str = String::from_utf8(out).unwrap();
+    assert!(out_str.starts_with("buffetcar "));
+}
+
+#[test]
+fn version_subcommand_prints_version() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar", "version"], &mut out, &mut err);
+    assert_eq!(code, 0);
+    let out_str = String::from_utf8(out).unwrap();
+    assert!(out_str.starts_with("buffetcar "));
+}
+
+#[test]
+fn version_all_triggers_produce_same_output() {
+    let triggers: Vec<Vec<&str>> = vec![
+        vec!["buffetcar", "--version"],
+        vec!["buffetcar", "-V"],
+        vec!["buffetcar", "version"],
+    ];
+    let mut outputs = Vec::new();
+    for args in &triggers {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = buffetcar::run_with_io(args.clone(), &mut out, &mut err);
+        assert_eq!(code, 0);
+        outputs.push(String::from_utf8(out).unwrap());
+    }
+    assert_eq!(outputs[0], outputs[1], "--version and -V should match");
+    assert_eq!(
+        outputs[0], outputs[2],
+        "--version and version subcommand should match"
+    );
+}
+
+#[test]
+fn help_header_includes_version() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar", "help"], &mut out, &mut err);
+    assert_eq!(code, 0);
+    let out_str = String::from_utf8(out).unwrap();
+    // The first line of help should be the version line.
+    let first_line = out_str.lines().next().expect("help should have output");
+    assert!(
+        first_line.starts_with("buffetcar "),
+        "help header should start with version: got '{first_line}'"
+    );
 }
