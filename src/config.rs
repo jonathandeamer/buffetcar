@@ -1,4 +1,4 @@
-use crate::cli::{CheckArgs, Command, ServeArgs};
+use crate::cli::{CheckArgs, Command, ServeArgs, Subcommand};
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -34,13 +34,20 @@ pub(crate) struct CheckConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConfigError {
     message: String,
+    pub(crate) hint: Option<Subcommand>,
 }
 
 impl ConfigError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            hint: None,
         }
+    }
+
+    fn with_hint(mut self, sub: Subcommand) -> Self {
+        self.hint = Some(sub);
+        self
     }
 
     pub(crate) fn message(&self) -> &str {
@@ -54,8 +61,12 @@ pub(crate) fn validate(command: Command) -> Result<RunMode, ConfigError> {
 
 pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode, ConfigError> {
     let mode = match command {
-        Command::Serve(args) => RunMode::Serve(validate_serve(args)?),
-        Command::Check(args) => RunMode::Check(validate_check(args)?),
+        Command::Serve(args) => {
+            RunMode::Serve(validate_serve(args).map_err(|e| e.with_hint(Subcommand::Serve))?)
+        }
+        Command::Check(args) => {
+            RunMode::Check(validate_check(args).map_err(|e| e.with_hint(Subcommand::Check))?)
+        }
         Command::Help(_) => return Err(ConfigError::new("help command is not a runnable mode")),
     };
 

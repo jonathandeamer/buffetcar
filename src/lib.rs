@@ -55,11 +55,12 @@ where
             let styler = cli::Styler::new_stderr();
             let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
             let _ = write!(err, "{}", cli::USAGE);
-            let _ = writeln!(
-                err,
-                "\nFor detailed help, run: {}",
-                styler.bold("buffetcar --help")
-            );
+            let help_cmd = match error.hint {
+                Some(cli::Subcommand::Serve) => "buffetcar help serve",
+                Some(cli::Subcommand::Check) => "buffetcar help check",
+                None => "buffetcar --help",
+            };
+            let _ = writeln!(err, "\nFor detailed help, run: {}", styler.bold(help_cmd));
             return 2;
         }
     };
@@ -101,6 +102,13 @@ where
         Err(error) => {
             let styler = cli::Styler::new_stderr();
             let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
+            let _ = write!(err, "{}", cli::USAGE);
+            let help_cmd = match error.hint {
+                Some(cli::Subcommand::Serve) => "buffetcar help serve",
+                Some(cli::Subcommand::Check) => "buffetcar help check",
+                None => "buffetcar --help",
+            };
+            let _ = writeln!(err, "\nFor detailed help, run: {}", styler.bold(help_cmd));
             2
         }
     }

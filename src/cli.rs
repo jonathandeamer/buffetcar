@@ -36,13 +36,20 @@ pub(crate) struct CheckArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CliError {
     message: String,
+    pub(crate) hint: Option<Subcommand>,
 }
 
 impl CliError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            hint: None,
         }
+    }
+
+    fn with_hint(mut self, sub: Subcommand) -> Self {
+        self.hint = Some(sub);
+        self
     }
 
     pub(crate) fn message(&self) -> &str {
@@ -116,8 +123,12 @@ where
     };
 
     match mode {
-        ModeName::Serve => parse_serve(&rest).map(Command::Serve),
-        ModeName::Check => parse_check(&rest).map(Command::Check),
+        ModeName::Serve => parse_serve(&rest)
+            .map(Command::Serve)
+            .map_err(|e| e.with_hint(Subcommand::Serve)),
+        ModeName::Check => parse_check(&rest)
+            .map(Command::Check)
+            .map_err(|e| e.with_hint(Subcommand::Check)),
     }
 }
 
