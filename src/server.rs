@@ -113,8 +113,9 @@ fn worker_loop(
 ) {
     loop {
         // Hold the lock only across `recv`; release it before handling so other
-        // workers can pick up the next connection.
-        let stream = match rx.lock().unwrap().recv() {
+        // workers can pick up the next connection. Recover from a poisoned lock
+        // rather than panicking, so one failed worker cannot collapse the pool.
+        let stream = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
             Ok(stream) => stream,
             Err(_) => return, // channel closed: shut the worker down
         };
