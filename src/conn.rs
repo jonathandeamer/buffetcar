@@ -238,4 +238,61 @@ mod tests {
             "a silent client should hit the read timeout"
         );
     }
+
+    /// Shrink a socket buffer (`SO_SNDBUF` or `SO_RCVBUF`) so the send path
+    /// fills quickly. The kernel may enforce a higher floor; combined with the
+    /// oversized payload the write still blocks once the reader stops draining.
+    #[cfg(unix)]
+    fn shrink_buf(fd: std::os::fd::RawFd, opt: libc::c_int) {
+        let size: libc::c_int = 4096;
+        let ret = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                opt,
+                &size as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(ret, 0, "setsockopt failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_timeout_fires_for_a_stalled_reader() {
+        use std::os::fd::AsRawFd;
+
+        let site = TempSite::new();
+        // Larger than any socket buffer, so the server's write_all cannot drain
+        // into the kernel and must block on a reader that never reads.
+        site.write("big", &vec![b'x'; 8 * 1024 * 1024]);
+        let root = Root::open(site.path()).expect("open root");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut client = TcpStream::connect(addr).expect("connect");
+        shrink_buf(client.as_raw_fd(), libc::SO_RCVBUF);
+
+        let (server, _) = listener.accept().expect("accept");
+        shrink_buf(server.as_raw_fd(), libc::SO_SNDBUF);
+
+        let result = std::thread::scope(|scope| {
+            let handle_thread = scope.spawn(|| {
+                handle(
+                    server,
+                    &root,
+                    Duration::from_secs(5),
+                    Duration::from_millis(200),
+                )
+            });
+            // Ask for the big file, then never read the response.
+            client.write_all(b"big\n").expect("write selector");
+            handle_thread.join().expect("join handle thread")
+        });
+
+        assert!(
+            result.is_err(),
+            "a reader that never reads should trip the write timeout"
+        );
+    }
 }

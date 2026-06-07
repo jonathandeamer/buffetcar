@@ -113,6 +113,70 @@ the feature, and it outweighs the modest convenience the markers provide.
   is the most consequential and should be treated as a separate, larger decision
   on its own.
 
+## Alternative approaches explored
+
+Following reaffirmation of the above, three designs were explored to understand
+whether equivalent per-directory customisation (sort order, header text) could
+be provided without the dotfile or in-tree-control-surface cost.
+
+### Approach A — offline generation tool (pre-baked)
+
+A `buffetcar gen` subcommand or standalone tool that users run in their
+directory. It reads a config (anywhere on disk; the server never sees it),
+generates a standard `index` file with entries sorted as desired and any header
+prepended, and writes it to disk. The server is completely unchanged — it serves
+the `index` file as it always has. All three invariants remain absolute.
+
+Trade-off: listings do not update automatically; the user must re-run the tool
+(a post-commit hook or watch script covers most deployments). Not ruled out as a
+future external tool, but not part of the server.
+
+### Approach B — out-of-tree sidecar (live)
+
+A `--listing-meta PATH` flag pointing to a directory outside the served root
+that mirrors its structure. Per-directory config files live there, not in the
+served tree. All in-tree invariants hold.
+
+Trade-off: users need write access to their own sidecar path, which the operator
+must provision. A default path (e.g. `~/.config/buffetcar/listings/`) reduces
+flag friction but does not provide true self-service in a multi-user deployment —
+the server runs as a single service user, so `~` is that user's home, not each
+content publisher's. Not implemented: operational complexity outweighs the
+benefit given the `index` file alternative.
+
+### Approach C — named non-dot in-tree config file (live, self-service)
+
+A reserved filename (e.g. `_listing`) inside a directory. The server reads it at
+listing time, never serves it in response to a selector, and never lists it.
+Sort preference and optional header text are drawn from it.
+
+This is the closest analog to the Go markers — a regular non-dot file with
+explicit server-side exclusion. It preserves the dotfile invariant by letter but
+explicitly relaxes "no in-tree control surfaces" to "no in-tree control surfaces
+*except `_listing`*." That is one named exception rather than three dotfiles, but
+it is still a conditional: predicting a listing now requires inspecting
+`_listing` files in addition to directory contents, and the server acquires a new
+parser in the hot path.
+
+Header content is the heaviest part: the server injects user-controlled bytes
+into a server-generated page. Even plain-text-only, a user can write content that
+appears to come from the server; with `=> ` links allowed, arbitrary link
+injection to external destinations becomes possible. A sort-only subset is more
+defensible but still costs the invariant.
+
+Not implemented: the only gap Approach C fills over writing an `index` file
+manually is *live* listing updates without any tool invocation — a convenience
+feature. Paying a permanent auditability tax on the server's security posture
+for a convenience feature is inconsistent with the project's character.
+
+### Why the existing model is sufficient
+
+The `index` file mechanism already covers every legitimate use case. A user who
+wants custom listing order or a preamble writes their `index` file; the server
+serves it verbatim. The listing model stays a one-liner. A future external
+generation tool (Approach A) could automate `index` maintenance without touching
+the server at all.
+
 ## References
 
 - `docs/superpowers/specs/2026-06-05-buffetcar-design.md` (original `.desc`
