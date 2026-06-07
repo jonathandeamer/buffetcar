@@ -187,6 +187,113 @@ fn rejects_and_omits_special_files() {
 
 #[cfg(unix)]
 #[test]
+fn concurrent_name_swaps_never_serve_outside_or_special_content() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    let site = TempSite::new();
+    let root = site.path().to_path_buf();
+    let target = root.join("target");
+
+    let stage = sibling_dir(&root, "stage");
+    let outside = sibling_dir(&root, "outside");
+    let _stage_guard = DirGuard(stage.clone());
+    let _outside_guard = DirGuard(outside.clone());
+    let secret = outside.join("secret.txt");
+    fs::write(&secret, b"SECRET\n").expect("write outside secret");
+
+    const READERS: usize = 3;
+    const REQUESTS: usize = 2000;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let failures: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let file_observations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dir_observations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    thread::scope(|scope| {
+        // Mutator: cycle `target` through file / symlink / FIFO / directory.
+        {
+            let stop = Arc::clone(&stop);
+            let stage = stage.clone();
+            let secret = secret.clone();
+            let target = target.clone();
+            scope.spawn(move || {
+                let mut i = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    remove_target(&target);
+                    swap_in(&stage, &secret, &target, i);
+                    i += 1;
+                }
+                remove_target(&target);
+            });
+        }
+
+        // Readers: request "target" repeatedly; record any disallowed body.
+        let mut readers = Vec::new();
+        for _ in 0..READERS {
+            let failures = Arc::clone(&failures);
+            let file_observations = Arc::clone(&file_observations);
+            let dir_observations = Arc::clone(&dir_observations);
+            let root = root.clone();
+            readers.push(scope.spawn(move || {
+                for _ in 0..REQUESTS {
+                    match buffetcar::serve_selector(&root, "target") {
+                        Ok(body) => {
+                            if body == b"SAFE\n" {
+                                file_observations.fetch_add(1, Ordering::Relaxed);
+                            } else if body == b"=> child.txt\n" {
+                                dir_observations.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if !is_allowed(&body) {
+                                failures.lock().unwrap().push(body);
+                            }
+                        }
+                        Err(e) => {
+                            // serve_selector maps lookup failures to Ok(NOT_FOUND); a raw Err here is
+                            // unlikely, but we check and ignore NotFound defensively.
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                failures
+                                    .lock()
+                                    .unwrap()
+                                    .push(format!("Err: {e}").into_bytes());
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
+        for reader in readers {
+            reader.join().expect("reader thread panicked");
+        }
+        stop.store(true, Ordering::Relaxed);
+    });
+
+    let failures = failures.lock().unwrap();
+    assert!(
+        failures.is_empty(),
+        "disallowed bodies served during swaps: {:?}",
+        failures
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect::<Vec<_>>()
+    );
+
+    let file_obs = file_observations.load(Ordering::Relaxed);
+    let dir_obs = dir_observations.load(Ordering::Relaxed);
+    assert!(
+        file_obs > 0,
+        "race test warning: readers never observed the safe file variant (file_obs = 0)"
+    );
+    assert!(
+        dir_obs > 0,
+        "race test warning: readers never observed the directory listing variant (dir_obs = 0)"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn rejects_non_world_readable_file() {
     let site = TempSite::new();
     site.write_mode("private.txt", b"private\n", 0o600);
@@ -369,4 +476,83 @@ fn make_chain_public(root: &Path, leaf: &Path) {
         }
         dir = d.parent();
     }
+}
+
+/// Remove whatever node currently occupies `target` (file, symlink, FIFO, or
+/// directory). One of the two calls succeeds; both errors are ignored.
+#[cfg(unix)]
+fn remove_target(target: &Path) {
+    let _ = fs::remove_file(target);
+    let _ = fs::remove_dir_all(target);
+}
+
+/// Create a self-cleaning sibling directory of `root` (same filesystem, so
+/// `rename` works, but outside the served tree).
+#[cfg(unix)]
+fn sibling_dir(root: &Path, suffix: &str) -> PathBuf {
+    let name = format!("{}-{suffix}", root.file_name().unwrap().to_str().unwrap());
+    let dir = root.parent().unwrap().join(name);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir(&dir).expect("create sibling dir");
+    make_public(&dir, 0o755);
+    dir
+}
+
+#[cfg(unix)]
+struct DirGuard(PathBuf);
+
+#[cfg(unix)]
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+fn make_fifo(p: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).expect("cstring");
+    let ret = unsafe { libc::mkfifo(c.as_ptr(), 0o644) };
+    assert_eq!(ret, 0, "mkfifo failed");
+}
+
+/// Stage one fully-formed variant under `stage/node`, then atomically rename it
+/// onto `target`. Staging-then-rename guarantees readers see either an absent
+/// `target` or a complete node — never a half-written file or empty directory
+/// at construction time.
+#[cfg(unix)]
+fn swap_in(stage: &Path, secret: &Path, target: &Path, variant: usize) {
+    let p = stage.join("node");
+    let _ = fs::remove_file(&p);
+    let _ = fs::remove_dir_all(&p);
+    match variant % 4 {
+        0 => {
+            fs::write(&p, b"SAFE\n").expect("write staged file");
+            make_public(&p, 0o644);
+        }
+        1 => {
+            std::os::unix::fs::symlink(secret, &p).expect("stage symlink");
+        }
+        2 => {
+            make_fifo(&p);
+        }
+        _ => {
+            fs::create_dir(&p).expect("stage dir");
+            let child = p.join("child.txt");
+            fs::write(&child, b"hi\n").expect("write child");
+            make_public(&child, 0o644);
+            make_public(&p, 0o755);
+        }
+    }
+    fs::rename(&p, target).expect("rename staged node onto target");
+}
+
+/// The only bodies a request for `target` may legitimately return while it is
+/// being swapped: the safe file, the directory's listing, a transient empty
+/// listing (reader raced the directory teardown), or `document not found`.
+fn is_allowed(body: &[u8]) -> bool {
+    body == b"SAFE\n"
+        || body == b"=> child.txt\n"
+        || body.is_empty()
+        || body == b"document not found"
 }
