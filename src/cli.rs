@@ -64,6 +64,10 @@ where
     let _program = args.next();
     let mut rest: Vec<OsString> = args.collect();
 
+    if rest.is_empty() {
+        return Ok(Command::Help(HelpArgs::default()));
+    }
+
     let has_help_flag = rest.iter().any(|a| a == "-h" || a == "--help");
 
     if rest.first().and_then(|a| a.to_str()) == Some("help") {
@@ -275,6 +279,7 @@ A hardened, single-binary Nex server.
 {commands_hdr}
     {serve_cmd}       Start the Nex server daemon (default)
     {check_cmd}       Run local file and path policy diagnostics
+    {help_cmd}        Print this message or the help for the given subcommand
 
 For detailed help on a command, run:
     buffetcar help {serve_cmd}
@@ -286,6 +291,7 @@ For detailed help on a command, run:
         commands_hdr = styler.bold("COMMANDS"),
         serve_cmd = styler.green("serve"),
         check_cmd = styler.green("check"),
+        help_cmd = styler.green("help"),
     )
 }
 

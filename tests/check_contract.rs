@@ -245,6 +245,7 @@ fn help_screen_triggers_and_content() {
     assert!(out_str.contains("A hardened, single-binary Nex server."));
     assert!(out_str.contains("USAGE:"));
     assert!(out_str.contains("COMMANDS"));
+    assert!(out_str.contains("help        Print this message or the help for the given subcommand"));
     assert!(!out_str.contains("0.1.0")); // No hardcoded version number
 
     // Serve help
@@ -275,4 +276,16 @@ fn error_output_includes_help_hint() {
     assert!(err_str.contains("error: unknown argument '--invalid-flag'"));
     assert!(err_str.contains("usage: buffetcar"));
     assert!(err_str.contains("For detailed help, run: buffetcar --help"));
+}
+
+#[test]
+fn bare_run_displays_help_and_exits_zero() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = buffetcar::run_with_io(vec!["buffetcar"], &mut out, &mut err);
+    assert_eq!(code, 0);
+    let out_str = String::from_utf8(out).unwrap();
+    assert!(out_str.contains("buffetcar"));
+    assert!(out_str.contains("A hardened, single-binary Nex server."));
+    assert!(out_str.contains("help        Print this message or the help for the given subcommand"));
 }
