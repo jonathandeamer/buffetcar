@@ -52,30 +52,55 @@ where
     let command = match cli::parse(args) {
         Ok(command) => command,
         Err(error) => {
-            let _ = writeln!(err, "error: {}", error.message());
+            let styler = cli::Styler::new_stderr();
+            let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
             let _ = write!(err, "{}", cli::USAGE);
+            let _ = writeln!(
+                err,
+                "\nFor detailed help, run: {}",
+                styler.bold("buffetcar --help")
+            );
             return 2;
         }
     };
+
+    if let cli::Command::Help(help_args) = command {
+        let styler = cli::Styler::new_stdout();
+        match help_args.subcommand {
+            None => {
+                let _ = write!(out, "{}", cli::general_help(&styler));
+            }
+            Some(cli::Subcommand::Serve) => {
+                let _ = write!(out, "{}", cli::serve_help(&styler));
+            }
+            Some(cli::Subcommand::Check) => {
+                let _ = write!(out, "{}", cli::check_help(&styler));
+            }
+        }
+        return 0;
+    }
 
     match config::validate(command) {
         Ok(config::RunMode::Check(config)) => match check::run(&config, out) {
             Ok(true) => 0,
             Ok(false) => 1,
             Err(error) => {
-                let _ = writeln!(err, "error: {error}");
+                let styler = cli::Styler::new_stderr();
+                let _ = writeln!(err, "{} {error}", styler.red_bold("error:"));
                 2
             }
         },
         Ok(config::RunMode::Serve(config)) => match server::run(&config, &mut *err) {
             Ok(()) => 0,
             Err(error) => {
-                let _ = writeln!(err, "error: {}", error.message());
+                let styler = cli::Styler::new_stderr();
+                let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
                 1
             }
         },
         Err(error) => {
-            let _ = writeln!(err, "error: {}", error.message());
+            let styler = cli::Styler::new_stderr();
+            let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
             2
         }
     }

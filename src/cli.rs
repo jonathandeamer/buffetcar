@@ -209,15 +209,21 @@ fn display_arg(arg: &OsString) -> String {
 
 use std::io::IsTerminal;
 
-#[allow(dead_code)]
 pub(crate) struct Styler {
     use_color: bool,
 }
 
-#[allow(dead_code)]
 impl Styler {
-    pub(crate) fn new<W: IsTerminal>(stream: &W) -> Self {
-        let is_atty = stream.is_terminal();
+    pub(crate) fn new_stdout() -> Self {
+        let is_atty = std::io::stdout().is_terminal();
+        let no_color = std::env::var_os("NO_COLOR").is_some();
+        Self {
+            use_color: is_atty && !no_color,
+        }
+    }
+
+    pub(crate) fn new_stderr() -> Self {
+        let is_atty = std::io::stderr().is_terminal();
         let no_color = std::env::var_os("NO_COLOR").is_some();
         Self {
             use_color: is_atty && !no_color,
@@ -257,7 +263,6 @@ impl Styler {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn general_help(styler: &Styler) -> String {
     format!(
         "\
@@ -284,7 +289,6 @@ For detailed help on a command, run:
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn serve_help(styler: &Styler) -> String {
     format!(
         "\
@@ -325,7 +329,6 @@ Start the Nex server daemon.
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn check_help(styler: &Styler) -> String {
     format!(
         "\
