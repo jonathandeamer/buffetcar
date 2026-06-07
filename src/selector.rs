@@ -17,16 +17,39 @@ pub(crate) struct Request {
     pub(crate) dir_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectorReject {
+    TooLong,
+    Nul,
+    DotfileComponent,
+    EscapesRoot,
+}
+
+impl SelectorReject {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            SelectorReject::TooLong => "selector exceeds 1024 bytes",
+            SelectorReject::Nul => "selector contains NUL",
+            SelectorReject::DotfileComponent => "dotfile component",
+            SelectorReject::EscapesRoot => "selector escapes root",
+        }
+    }
+}
+
 /// Parse a selector into a `Request`, or `None` when it is unavailable by policy:
 /// over the byte bound, containing a NUL, naming a dotfile component, or escaping
 /// above the root via unbalanced `..`.
 pub(crate) fn parse(selector: &str) -> Option<Request> {
+    parse_diagnostic(selector).ok()
+}
+
+pub(crate) fn parse_diagnostic(selector: &str) -> Result<Request, SelectorReject> {
     if selector.len() > MAX_SELECTOR_BYTES {
-        return None;
+        return Err(SelectorReject::TooLong);
     }
     let selector = selector.strip_suffix('\r').unwrap_or(selector);
     if selector.contains('\0') {
-        return None;
+        return Err(SelectorReject::Nul);
     }
 
     let dir_only = selector.ends_with('/');
@@ -35,18 +58,18 @@ pub(crate) fn parse(selector: &str) -> Option<Request> {
         match raw {
             "" | "." => continue,
             ".." => {
-                components.pop()?;
+                components.pop().ok_or(SelectorReject::EscapesRoot)?;
             }
             name => {
                 if name.starts_with('.') {
-                    return None;
+                    return Err(SelectorReject::DotfileComponent);
                 }
                 components.push(name.to_owned());
             }
         }
     }
 
-    Some(Request {
+    Ok(Request {
         components,
         dir_only,
     })
@@ -102,6 +125,43 @@ mod tests {
         assert_eq!(parse(&oversized), None);
         let at_limit = "a".repeat(1024);
         assert_eq!(parse(&at_limit), req(&[&at_limit], false));
+    }
+
+    #[test]
+    fn diagnostic_parse_preserves_reject_reasons() {
+        assert_eq!(
+            parse_diagnostic(".secret"),
+            Err(SelectorReject::DotfileComponent)
+        );
+        assert_eq!(
+            parse_diagnostic("listing/.hidden"),
+            Err(SelectorReject::DotfileComponent)
+        );
+        assert_eq!(parse_diagnostic("a\0b"), Err(SelectorReject::Nul));
+        assert_eq!(
+            parse_diagnostic("../outside"),
+            Err(SelectorReject::EscapesRoot)
+        );
+
+        let oversized = "a".repeat(1025);
+        assert_eq!(parse_diagnostic(&oversized), Err(SelectorReject::TooLong));
+    }
+
+    #[test]
+    fn selector_reject_reason_messages_are_stable() {
+        assert_eq!(
+            SelectorReject::TooLong.message(),
+            "selector exceeds 1024 bytes"
+        );
+        assert_eq!(SelectorReject::Nul.message(), "selector contains NUL");
+        assert_eq!(
+            SelectorReject::DotfileComponent.message(),
+            "dotfile component"
+        );
+        assert_eq!(
+            SelectorReject::EscapesRoot.message(),
+            "selector escapes root"
+        );
     }
 
     #[test]
