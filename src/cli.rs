@@ -207,6 +207,159 @@ fn display_arg(arg: &OsString) -> String {
     arg.to_string_lossy().into_owned()
 }
 
+use std::io::IsTerminal;
+
+#[allow(dead_code)]
+pub(crate) struct Styler {
+    use_color: bool,
+}
+
+#[allow(dead_code)]
+impl Styler {
+    pub(crate) fn new<W: IsTerminal>(stream: &W) -> Self {
+        let is_atty = stream.is_terminal();
+        let no_color = std::env::var_os("NO_COLOR").is_some();
+        Self {
+            use_color: is_atty && !no_color,
+        }
+    }
+
+    pub(crate) fn bold(&self, text: &str) -> String {
+        if self.use_color {
+            format!("\x1b[1m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    pub(crate) fn green(&self, text: &str) -> String {
+        if self.use_color {
+            format!("\x1b[32m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    pub(crate) fn red_bold(&self, text: &str) -> String {
+        if self.use_color {
+            format!("\x1b[1;31m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    pub(crate) fn yellow(&self, text: &str) -> String {
+        if self.use_color {
+            format!("\x1b[33m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn general_help(styler: &Styler) -> String {
+    format!(
+        "\
+buffetcar
+A hardened, single-binary Nex server.
+
+{usage_hdr}
+    buffetcar [{command_opt}] [{options_opt}]
+
+{commands_hdr}
+    {serve_cmd}       Start the Nex server daemon (default)
+    {check_cmd}       Run local file and path policy diagnostics
+
+For detailed help on a command, run:
+    buffetcar help {serve_cmd}
+    buffetcar help {check_cmd}
+",
+        usage_hdr = styler.bold("USAGE:"),
+        command_opt = styler.green("COMMAND"),
+        options_opt = styler.green("OPTIONS"),
+        commands_hdr = styler.bold("COMMANDS"),
+        serve_cmd = styler.green("serve"),
+        check_cmd = styler.green("check"),
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn serve_help(styler: &Styler) -> String {
+    format!(
+        "\
+buffetcar {serve_cmd}
+Start the Nex server daemon.
+
+{usage_hdr}
+    buffetcar [{serve_cmd}] {root_flag} {path_val} [{listen_flag} {addr_val}] [{workers_flag} {n_val}] [{write_timeout_flag} {secs_val}]
+
+{options_hdr}
+    {root_flag} {path_val}           (Required) Absolute path to the directory to serve.
+                            Must be world-executable (e.g., 0755). Symlinks are
+                            never followed and files inside must be world-readable.
+                            Refuses to serve if run as root (UID 0).
+
+    {listen_flag} {addr_val}         Socket address to bind to (default: 127.0.0.1:1900).
+                            * 127.0.0.1:1900 - Local loopback only (private development).
+                            * 0.0.0.0:1900   - All interfaces (accessible over network).
+                            * <IP>:1900      - Bind to specific network card or VPN (e.g. Tailscale).
+
+    {workers_flag} {n_val}           Number of worker threads (between 1 and 1024, default: 128).
+                            Limits the maximum concurrent connections the server handles.
+
+    {write_timeout_flag} {secs_val}  Socket write timeout in seconds (between 1 and 300, default: 30).
+                            Stalled connections are dropped after this time.
+",
+        serve_cmd = styler.green("serve"),
+        usage_hdr = styler.bold("USAGE:"),
+        root_flag = styler.green("--root"),
+        path_val = styler.yellow("<PATH>"),
+        listen_flag = styler.green("--listen"),
+        addr_val = styler.yellow("<ADDR>"),
+        workers_flag = styler.green("--workers"),
+        n_val = styler.yellow("<N>"),
+        write_timeout_flag = styler.green("--write-timeout"),
+        secs_val = styler.yellow("<SECS>"),
+        options_hdr = styler.bold("OPTIONS:"),
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn check_help(styler: &Styler) -> String {
+    format!(
+        "\
+buffetcar {check_cmd}
+Run local diagnostics on paths against the served root directory without binding sockets.
+
+{usage_hdr}
+    buffetcar {check_cmd} {root_flag} {path_val} {selector_val}...
+
+{arguments_hdr}
+    {selector_val}...           One or more relative selector paths to diagnose.
+                            For example: 'index', 'about.txt', 'logs/'.
+
+{options_hdr}
+    {root_flag} {path_val}           (Required) Absolute path to the directory to check.
+
+{policy_hdr}
+    * Regular files must be world-readable (0644) and have a link count of 1.
+    * Directories must be world-executable (0755) to traverse.
+    * Symlinks, hardlinks, FIFOs, and special/device files are rejected.
+    * Path components starting with a dot (dotfiles/directories) are rejected.
+    * Mount crossing (crossing filesystem boundaries) is rejected.
+",
+        check_cmd = styler.green("check"),
+        usage_hdr = styler.bold("USAGE:"),
+        root_flag = styler.green("--root"),
+        path_val = styler.yellow("<PATH>"),
+        selector_val = styler.yellow("<selector>"),
+        arguments_hdr = styler.bold("ARGUMENTS:"),
+        options_hdr = styler.bold("OPTIONS:"),
+        policy_hdr = styler.bold("POLICY RULES VERIFIED:"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
