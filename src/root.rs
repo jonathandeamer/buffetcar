@@ -193,7 +193,14 @@ impl Root {
             return Ok(Some(child));
         }
         match self.open_child_dir(dir, name)? {
-            Some(_) => Ok(Some(Child::Dir)),
+            Some(fd) => {
+                let st = fs::fstat(&fd)?;
+                if self.listable(&st) {
+                    Ok(Some(Child::Dir))
+                } else {
+                    Ok(None)
+                }
+            }
             None => Ok(None),
         }
     }
@@ -255,6 +262,9 @@ impl Root {
                         if let Err(reason) = self.accept_dir(&st) {
                             return Ok(Err(reason));
                         }
+                        if !self.listable(&st) {
+                            return Ok(Err(RejectReason::DirectoryNotWorldReadable));
+                        }
                         Ok(Ok(Child::Dir))
                     }
                     FileType::RegularFile => {
@@ -267,7 +277,14 @@ impl Root {
                 }
             }
             Err(_) => match self.open_child_dir_diagnostic(dir, name)? {
-                Ok(_) => Ok(Ok(Child::Dir)),
+                Ok(fd) => {
+                    let st = fs::fstat(&fd)?;
+                    if !self.listable(&st) {
+                        Ok(Err(RejectReason::DirectoryNotWorldReadable))
+                    } else {
+                        Ok(Ok(Child::Dir))
+                    }
+                }
                 Err(reason) => Ok(Err(reason)),
             },
         }
@@ -334,7 +351,7 @@ impl Root {
             return Ok(None);
         }
         match FileType::from_raw_mode(st.st_mode) {
-            FileType::Directory if self.dir_ok(&st) => Ok(Some(Child::Dir)),
+            FileType::Directory if self.listable(&st) => Ok(Some(Child::Dir)),
             FileType::RegularFile if self.file_ok(&st) => Ok(Some(Child::File(fd))),
             _ => Ok(None),
         }
@@ -351,7 +368,13 @@ impl Root {
                 return Ok(None);
             }
             match FileType::from_raw_mode(st.st_mode) {
-                FileType::Directory if self.dir_ok(&st) => return Ok(Some(Resolved::Dir(fd))),
+                FileType::Directory if self.dir_ok(&st) => {
+                    // Drop the PROBE fd and re-open with TRAVERSE_DIR so that
+                    // Resolved::Dir always carries a consistent search-only fd,
+                    // matching the fd returned by the dir_only and fallback paths.
+                    drop(fd);
+                    return self.open_leaf_dir(dir, name);
+                }
                 FileType::RegularFile if self.file_ok(&st) => {
                     return Ok(Some(Resolved::File(fd)));
                 }
