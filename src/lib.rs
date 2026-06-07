@@ -32,7 +32,7 @@ pub fn serve_selector(root: &Path, selector: &str) -> io::Result<Vec<u8>> {
 
     match root.resolve(&request)? {
         Some(Resolved::File(fd)) => read_file(fd),
-        Some(Resolved::Dir(fd)) => listing::serve(&root, fd),
+        Some(Resolved::Dir(fd)) => listing::serve(&root, &fd),
         None => Ok(NOT_FOUND.to_vec()),
     }
 }

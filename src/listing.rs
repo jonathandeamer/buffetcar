@@ -15,11 +15,20 @@ pub(crate) enum DirectoryResponse {
     Listing,
 }
 
-pub(crate) fn serve(root: &Root, dir: OwnedFd) -> io::Result<Vec<u8>> {
-    if let Some(bytes) = root.open_index(&dir)? {
+/// Serve a directory: stream its `index` if one is servable, otherwise a
+/// generated listing. Used by the `serve_selector` library/compatibility path,
+/// which buffers everything into a `Vec`.
+pub(crate) fn serve(root: &Root, dir: &OwnedFd) -> io::Result<Vec<u8>> {
+    if let Some(bytes) = root.open_index(dir)? {
         return Ok(bytes);
     }
-    let Some(list_dir) = root.open_listable_dir(&dir)? else {
+    generate(root, dir)
+}
+
+/// Generate a bounded plain-text listing for `dir`, or `document not found`
+/// bytes if the directory is not listable or exceeds the listing bounds.
+pub(crate) fn generate(root: &Root, dir: &OwnedFd) -> io::Result<Vec<u8>> {
+    let Some(list_dir) = root.open_listable_dir(dir)? else {
         return Ok(crate::NOT_FOUND.to_vec());
     };
 
