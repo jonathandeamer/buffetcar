@@ -75,6 +75,9 @@ of**:
 
 - `SAFE\n` — the file variant was resolved.
 - `=> child.txt\n` — the directory variant was listed.
+- `` (empty) — a reader holding an open fd to the directory variant raced its
+  teardown (child unlinked before `readdir`); a transient empty listing is a
+  safe, leak-free outcome.
 - `document not found` — symlink rejected, FIFO rejected (special file), or
   `target` absent mid-swap.
 
