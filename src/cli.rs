@@ -40,14 +40,14 @@ pub(crate) struct CliError {
 }
 
 impl CliError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             hint: None,
         }
     }
 
-    fn with_hint(mut self, sub: Subcommand) -> Self {
+    pub(crate) fn with_hint(mut self, sub: Subcommand) -> Self {
         self.hint = Some(sub);
         self
     }
@@ -95,20 +95,20 @@ where
     let mode = match rest.first().and_then(|arg| arg.to_str()) {
         Some("serve") => {
             rest.remove(0);
-            ModeName::Serve
+            Subcommand::Serve
         }
         Some("check") => {
             rest.remove(0);
-            ModeName::Check
+            Subcommand::Check
         }
-        _ => ModeName::Serve,
+        _ => Subcommand::Serve,
     };
 
     match mode {
-        ModeName::Serve => parse_serve(&rest)
+        Subcommand::Serve => parse_serve(&rest)
             .map(Command::Serve)
             .map_err(|e| e.with_hint(Subcommand::Serve)),
-        ModeName::Check => parse_check(&rest)
+        Subcommand::Check => parse_check(&rest)
             .map(Command::Check)
             .map_err(|e| e.with_hint(Subcommand::Check)),
     }
@@ -138,12 +138,6 @@ fn infer_help_subcommand(rest: &[OsString]) -> Option<Subcommand> {
         return Some(Subcommand::Serve);
     }
     None
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModeName {
-    Serve,
-    Check,
 }
 
 fn parse_serve(args: &[OsString]) -> Result<ServeArgs, CliError> {
@@ -237,52 +231,43 @@ pub(crate) struct Styler {
 }
 
 impl Styler {
-    pub(crate) fn new_stdout() -> Self {
-        let is_atty = std::io::stdout().is_terminal();
+    fn with_atty(is_atty: bool) -> Self {
         let no_color = std::env::var_os("NO_COLOR").is_some();
         Self {
             use_color: is_atty && !no_color,
         }
     }
 
+    pub(crate) fn new_stdout() -> Self {
+        Self::with_atty(std::io::stdout().is_terminal())
+    }
+
     pub(crate) fn new_stderr() -> Self {
-        let is_atty = std::io::stderr().is_terminal();
-        let no_color = std::env::var_os("NO_COLOR").is_some();
-        Self {
-            use_color: is_atty && !no_color,
+        Self::with_atty(std::io::stderr().is_terminal())
+    }
+
+    fn wrap(&self, code: &str, text: &str) -> String {
+        if self.use_color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
         }
     }
 
     pub(crate) fn bold(&self, text: &str) -> String {
-        if self.use_color {
-            format!("\x1b[1m{text}\x1b[0m")
-        } else {
-            text.to_string()
-        }
+        self.wrap("1", text)
     }
 
     pub(crate) fn green(&self, text: &str) -> String {
-        if self.use_color {
-            format!("\x1b[32m{text}\x1b[0m")
-        } else {
-            text.to_string()
-        }
+        self.wrap("32", text)
     }
 
     pub(crate) fn red_bold(&self, text: &str) -> String {
-        if self.use_color {
-            format!("\x1b[1;31m{text}\x1b[0m")
-        } else {
-            text.to_string()
-        }
+        self.wrap("1;31", text)
     }
 
     pub(crate) fn yellow(&self, text: &str) -> String {
-        if self.use_color {
-            format!("\x1b[33m{text}\x1b[0m")
-        } else {
-            text.to_string()
-        }
+        self.wrap("33", text)
     }
 }
 
