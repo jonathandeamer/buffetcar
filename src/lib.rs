@@ -81,16 +81,14 @@ where
             Ok(true) => 0,
             Ok(false) => 1,
             Err(error) => {
-                let styler = cli::Styler::new_stderr();
-                let _ = writeln!(err, "{} {error}", styler.red_bold("error:"));
+                eprint_error_line(err, &error.to_string());
                 2
             }
         },
         Ok(config::RunMode::Serve(config)) => match server::run(&config, &mut *err) {
             Ok(()) => 0,
             Err(error) => {
-                let styler = cli::Styler::new_stderr();
-                let _ = writeln!(err, "{} {}", styler.red_bold("error:"), error.message());
+                eprint_error_line(err, &error.message());
                 1
             }
         },
@@ -104,8 +102,8 @@ where
 /// Print a CLI error to stderr: the `error:` line, the usage block, and a
 /// subcommand-scoped "for detailed help" pointer derived from `hint`.
 fn print_cli_error(err: &mut impl Write, message: &str, hint: Option<cli::Subcommand>) {
+    eprint_error_line(err, message);
     let styler = cli::Styler::new_stderr();
-    let _ = writeln!(err, "{} {}", styler.red_bold("error:"), message);
     let _ = write!(err, "{}", cli::USAGE);
     let help_cmd = match hint {
         Some(cli::Subcommand::Serve) => "buffetcar help serve",
@@ -113,6 +111,12 @@ fn print_cli_error(err: &mut impl Write, message: &str, hint: Option<cli::Subcom
         None => "buffetcar --help",
     };
     let _ = writeln!(err, "\nFor detailed help, run: {}", styler.bold(help_cmd));
+}
+
+/// Write a styled `error: <message>` line to stderr.
+fn eprint_error_line(err: &mut impl Write, message: &str) {
+    let styler = cli::Styler::new_stderr();
+    let _ = writeln!(err, "{} {}", styler.red_bold("error:"), message);
 }
 
 pub(crate) fn read_file(fd: OwnedFd) -> io::Result<Vec<u8>> {
