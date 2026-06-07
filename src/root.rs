@@ -259,11 +259,11 @@ impl Root {
                 let st = fs::fstat(&fd)?;
                 match FileType::from_raw_mode(st.st_mode) {
                     FileType::Directory => {
-                        if !self.listable(&st) {
-                            return Ok(Err(RejectReason::DirectoryNotWorldReadable));
-                        }
                         if let Err(reason) = self.accept_dir(&st) {
                             return Ok(Err(reason));
+                        }
+                        if !self.listable(&st) {
+                            return Ok(Err(RejectReason::DirectoryNotWorldReadable));
                         }
                         Ok(Ok(Child::Dir))
                     }
