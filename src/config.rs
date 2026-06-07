@@ -204,8 +204,7 @@ fn effective_uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::test_support::TempSite;
 
     #[test]
     fn validates_serve_defaults() {
@@ -489,33 +488,5 @@ mod tests {
             stderr,
             format!("serving {} on 127.0.0.1:1900\n", site.path().display())
         );
-    }
-
-    struct TempSite {
-        path: PathBuf,
-    }
-
-    impl TempSite {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(unique_name("buffetcar-config", ""));
-            fs::create_dir(&path).expect("create temp site root");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempSite {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    fn unique_name(prefix: &str, suffix: &str) -> String {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!("{prefix}-{}-{n}{suffix}", std::process::id())
     }
 }

@@ -10,7 +10,7 @@ use crate::root::{Child, Resolved, Root};
 use crate::selector::{self, MAX_SELECTOR_BYTES};
 use crate::{listing, NOT_FOUND};
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::os::fd::OwnedFd;
 use std::time::Duration;
@@ -48,8 +48,12 @@ pub(crate) fn handle(
 /// Read one selector line: bytes up to a `\n` (excluded) or EOF, bounded at
 /// `MAX_SELECTOR_BYTES`. Returns `None` for an oversized or non-UTF-8 selector,
 /// which the caller maps to `document not found`. A trailing `\r` is left in
-/// place; `selector::parse` strips it.
+/// place; `selector::parse` strips it. One byte past the cap is buffered so a
+/// max-length path sent with CRLF line endings survives — `selector::parse`
+/// strips the CR and re-checks the authoritative 1024-byte bound. Reads go
+/// through a `BufReader` so the byte-at-a-time scan is not a syscall per byte.
 fn read_selector(reader: &mut impl Read) -> io::Result<Option<String>> {
+    let mut reader = BufReader::new(reader);
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -59,7 +63,7 @@ fn read_selector(reader: &mut impl Read) -> io::Result<Option<String>> {
         if byte[0] == b'\n' {
             break;
         }
-        if buf.len() == MAX_SELECTOR_BYTES {
+        if buf.len() > MAX_SELECTOR_BYTES {
             return Ok(None);
         }
         buf.push(byte[0]);
@@ -109,14 +113,9 @@ fn stream_file(fd: OwnedFd, out: &mut impl Write) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::root::Root;
-    use std::fs;
+    use crate::test_support::TempSite;
     use std::io::Cursor;
     use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
     fn round_trip(root: &Root, request: &[u8]) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -154,9 +153,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_oversized_selector() {
-        let mut reader = Cursor::new(vec![b'a'; 1025]);
+    fn rejects_selector_past_the_buffer_cap() {
+        // The reader buffers at most one byte past the 1024 cap (for a trailing
+        // CR); anything longer is rejected here rather than buffered unbounded.
+        let mut reader = Cursor::new(vec![b'a'; MAX_SELECTOR_BYTES + 2]);
         assert_eq!(read_selector(&mut reader).expect("read"), None);
+    }
+
+    #[test]
+    fn buffers_a_max_length_selector_with_trailing_cr() {
+        // 1024 path bytes + CR (1025 bytes before '\n') are kept here, then the
+        // CR is stripped and the 1024 bound re-checked by selector::parse, so a
+        // CRLF client at the limit is served instead of spuriously rejected.
+        let mut input = vec![b'a'; MAX_SELECTOR_BYTES];
+        input.extend_from_slice(b"\r\n");
+        let mut reader = Cursor::new(input);
+        let expected = format!("{}\r", "a".repeat(MAX_SELECTOR_BYTES));
+        assert_eq!(read_selector(&mut reader).expect("read"), Some(expected));
+    }
+
+    #[test]
+    fn over_limit_selector_is_not_found_end_to_end() {
+        let site = TempSite::new();
+        let root = Root::open(site.path()).expect("open root");
+        let mut selector = vec![b'a'; MAX_SELECTOR_BYTES + 1];
+        selector.push(b'\n');
+        assert_eq!(round_trip(&root, &selector), b"document not found");
     }
 
     #[test]
@@ -215,64 +237,5 @@ mod tests {
             result.is_err(),
             "a silent client should hit the read timeout"
         );
-    }
-
-    struct TempSite {
-        path: PathBuf,
-    }
-
-    impl TempSite {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(unique_name("buffetcar-conn", ""));
-            fs::create_dir(&path).expect("create temp site root");
-            #[cfg(unix)]
-            make_public(&path, 0o755);
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn write(&self, relative: &str, content: &[u8]) {
-            let path = self.path.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-                #[cfg(unix)]
-                make_chain_public(&self.path, parent);
-            }
-            fs::write(&path, content).expect("write fixture file");
-            #[cfg(unix)]
-            make_public(&path, 0o644);
-        }
-    }
-
-    impl Drop for TempSite {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    fn unique_name(prefix: &str, suffix: &str) -> String {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!("{prefix}-{}-{n}{suffix}", std::process::id())
-    }
-
-    #[cfg(unix)]
-    fn make_public(path: &Path, mode: u32) {
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("chmod fixture");
-    }
-
-    #[cfg(unix)]
-    fn make_chain_public(root: &Path, leaf: &Path) {
-        let mut dir = Some(leaf);
-        while let Some(d) = dir {
-            make_public(d, 0o755);
-            if d == root {
-                break;
-            }
-            dir = d.parent();
-        }
     }
 }
