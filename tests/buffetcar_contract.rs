@@ -243,6 +243,9 @@ fn does_not_list_non_world_readable_directory() {
 
     assert_eq!(respond(site.path(), "hidden/inside.txt"), b"inside\n");
     assert_eq!(respond(site.path(), "hidden"), b"document not found");
+    // execute-only directory must not appear in the parent listing —
+    // leaking its name would violate the no-information-leakage invariant.
+    assert_eq!(respond(site.path(), ""), b"");
 }
 
 #[test]

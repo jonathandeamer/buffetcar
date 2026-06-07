@@ -31,25 +31,27 @@ pub(crate) fn serve(root: &Root, dir: OwnedFd) -> io::Result<Vec<u8>> {
         let Ok(name) = std::str::from_utf8(bytes) else {
             continue;
         };
-        entries.push((name.to_owned(), matches!(child, Child::Dir)));
-        if entries.len() > MAX_ENTRIES {
+        if entries.len() >= MAX_ENTRIES {
             return Ok(crate::NOT_FOUND.to_vec());
         }
+        entries.push((name.to_owned(), matches!(child, Child::Dir)));
     }
 
     entries.sort();
 
     let mut out = String::new();
     for (name, is_dir) in entries {
+        // Pre-check avoids appending past the byte cap.
+        let extra = 4 + name.len() + usize::from(is_dir); // "=> " + name + "\n" + optional "/"
+        if out.len() + extra > MAX_BYTES {
+            return Ok(crate::NOT_FOUND.to_vec());
+        }
         out.push_str("=> ");
         out.push_str(&name);
         if is_dir {
             out.push('/');
         }
         out.push('\n');
-        if out.len() > MAX_BYTES {
-            return Ok(crate::NOT_FOUND.to_vec());
-        }
     }
     Ok(out.into_bytes())
 }
