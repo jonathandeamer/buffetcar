@@ -58,6 +58,19 @@ pub(crate) fn apply(_root: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A short note for the startup banner describing the active sandbox, or `None`
+/// when the platform has no sandbox. Keeps the platform-specific wording here
+/// rather than in the banner formatter.
+#[cfg(target_os = "openbsd")]
+pub(crate) fn status() -> Option<&'static str> {
+    Some("sandbox: pledge/unveil active")
+}
+
+#[cfg(not(target_os = "openbsd"))]
+pub(crate) fn status() -> Option<&'static str> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
