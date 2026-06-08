@@ -373,36 +373,85 @@ fn help_header_includes_version() {
 #[cfg(unix)]
 #[test]
 fn serve_graceful_shutdown_on_sigterm() {
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     let site = TempSite::new();
     site.write("a.txt", b"hello\n");
 
-    // Bind to an ephemeral port to find a free one.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    drop(listener); // release the port so buffetcar can bind it
-
+    // Ask the OS for an ephemeral port (`:0`) and let the server tell us which
+    // one it bound, instead of pre-picking a port, dropping the listener, and
+    // racing the child to re-bind it (that race intermittently lost to a foreign
+    // bind/TIME_WAIT under load). The startup banner is printed only after a
+    // successful bind, so reading it doubles as a readiness signal.
     let mut child = Command::new(env!("CARGO_BIN_EXE_buffetcar"))
         .args([
             "serve",
             "--root",
             site.path().to_str().expect("utf8 temp path"),
             "--listen",
-            &addr.to_string(),
+            "127.0.0.1:0",
         ])
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn buffetcar");
 
-    // Wait a brief moment for the server to start up.
-    // Try to connect in a loop up to 50 times (with 10ms sleep) until it succeeds.
+    // Drain the child's stderr on a thread so it never blocks on a full pipe,
+    // forwarding each line so we can find the banner's bound address.
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Banner: "serving <root> on <addr>[ (<status>)]". Wait for the line that
+    // carries a parseable socket address; the version line above it has none.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut collected_lines = Vec::new();
+    let addr: SocketAddr = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok(line) => {
+                collected_lines.push(line.clone());
+                if let Some(token) = line
+                    .rsplit(" on ")
+                    .next()
+                    .and_then(|rest| rest.split_whitespace().next())
+                {
+                    if let Ok(parsed_addr) = token.parse::<SocketAddr>() {
+                        break parsed_addr;
+                    }
+                }
+            }
+            Err(e) => {
+                let status = child.try_wait().ok().flatten();
+                panic!(
+                    "Failed to receive startup banner: {e:?}. \n\
+                     Child exit status: {status:?}\n\
+                     Stderr lines read:\n{}",
+                    collected_lines.join("\n")
+                );
+            }
+        }
+    };
+
+    // The banner means the listener is bound; a short retry covers the gap
+    // before the accept loop is ready. No port race: the server owns the port.
     let mut connected = false;
-    for _ in 0..50 {
+    for _ in 0..200 {
         if let Ok(mut stream) = TcpStream::connect(addr) {
-            // Write a request to verify it's working.
             if stream.write_all(b"a.txt\n").is_ok() {
                 let mut resp = Vec::new();
                 if stream.read_to_end(&mut resp).is_ok() && resp == b"hello\n" {
