@@ -369,3 +369,79 @@ fn help_header_includes_version() {
         "help header should start with version: got '{first_line}'"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn serve_graceful_shutdown_on_sigterm() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+    use std::time::Duration;
+
+    let site = TempSite::new();
+    site.write("a.txt", b"hello\n");
+
+    // Bind to an ephemeral port to find a free one.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    drop(listener); // release the port so buffetcar can bind it
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_buffetcar"))
+        .args([
+            "serve",
+            "--root",
+            site.path().to_str().expect("utf8 temp path"),
+            "--listen",
+            &addr.to_string(),
+        ])
+        .spawn()
+        .expect("spawn buffetcar");
+
+    // Wait a brief moment for the server to start up.
+    // Try to connect in a loop up to 50 times (with 10ms sleep) until it succeeds.
+    let mut connected = false;
+    for _ in 0..50 {
+        if let Ok(mut stream) = TcpStream::connect(addr) {
+            // Write a request to verify it's working.
+            if stream.write_all(b"a.txt\n").is_ok() {
+                let mut resp = Vec::new();
+                if stream.read_to_end(&mut resp).is_ok() && resp == b"hello\n" {
+                    connected = true;
+                    break;
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(connected, "server should start and handle requests");
+
+    // Now send SIGTERM to the child process.
+    let pid = child.id() as libc::pid_t;
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+
+    // Wait for the child to exit with a timeout.
+    let mut exited = false;
+    let mut status = None;
+    for _ in 0..100 {
+        if let Ok(Some(s)) = child.try_wait() {
+            exited = true;
+            status = Some(s);
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    if !exited {
+        let _ = child.kill();
+        panic!("server failed to shut down within 5 seconds of SIGTERM");
+    }
+
+    let status = status.unwrap();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "server should exit with code 0 on SIGTERM"
+    );
+}

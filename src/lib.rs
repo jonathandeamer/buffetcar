@@ -9,6 +9,7 @@ mod root;
 mod sandbox;
 mod selector;
 mod server;
+mod signal;
 mod version;
 
 #[cfg(test)]
