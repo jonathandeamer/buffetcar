@@ -48,6 +48,27 @@ pub(crate) fn install(shutdown: &Arc<AtomicBool>) {
     }
 }
 
+/// Block SIGTERM and SIGINT on the current thread.
+///
+/// In a multi-threaded process, process-directed signals can be delivered to
+/// any thread that has them unblocked. To ensure signals consistently interrupt
+/// the main thread's accept loop (and `poll`), worker threads call this at startup
+/// to block these signals.
+#[cfg(unix)]
+pub(crate) fn block_signals_on_current_thread() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+/// Non-Unix fallback: no-op.
+#[cfg(not(unix))]
+pub(crate) fn block_signals_on_current_thread() {}
+
 /// Non-Unix fallback: no-op.
 #[cfg(not(unix))]
 pub(crate) fn install(_shutdown: &Arc<AtomicBool>) {}

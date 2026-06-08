@@ -169,6 +169,7 @@ fn worker_loop(
     read_timeout: Duration,
     write_timeout: Duration,
 ) {
+    crate::signal::block_signals_on_current_thread();
     loop {
         // Hold the lock only across `recv`; release it before handling so other
         // workers can pick up the next connection. Recover from a poisoned lock
