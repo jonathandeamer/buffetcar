@@ -8,6 +8,14 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded in-flight runs. Keyed on ref, so a new push to a PR branch
+# cancels that branch's older runs (reclaiming the OpenBSD QEMU minutes), while
+# the push-to-main run lives in its own group and is never cancelled — it stays
+# the authoritative post-merge health signal for main.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
