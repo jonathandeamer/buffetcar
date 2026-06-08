@@ -17,7 +17,7 @@ There is no formal SLA, but you can expect an acknowledgement within a few days.
 
 buffetcar's primary threat is an **untrusted Nex selector from an anonymous TCP client**. A client connects on port 1900, sends one line, and receives a response. The containment story is:
 
-- **`cap-std`** makes every file open relative to the served root and structurally refuses `../` traversal and symlink escapes with no TOCTOU window — the OS kernel enforces this, not application logic.
+- **`rustix` fd-relative resolver** makes every file open relative to the served root (`openat` + `O_NOFOLLOW` + `fstat`) and structurally refuses `../` traversal and symlink escapes with no TOCTOU window — the OS kernel enforces this, not application logic.
 - **No symlinks are followed** anywhere in resolution, so an in-root symlink cannot be used to bypass dotfile rejection or escape the root.
 - **Dotfiles are an invariant**, not a default: there is no flag to enable serving them.
 - **Request size is bounded** at a hardcoded constant; there is no way to send an unbounded selector.
@@ -33,7 +33,7 @@ On OpenBSD, `pledge`/`unveil` add a second OS-level wall around the live process
 - Selector parsing that causes unbounded memory allocation or hang (slowloris, amplification)
 - A crafted selector that wedges or panics the server
 - Worker exhaustion via connection or resource starvation beyond the configured cap
-- Violations of the `cap-std` or `pledge`/`unveil` containment
+- Violations of the `rustix` fd-relative resolver or `pledge`/`unveil` containment
 
 ### Out of scope
 
