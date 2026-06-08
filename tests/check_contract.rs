@@ -421,8 +421,24 @@ fn serve_graceful_shutdown_on_sigterm() {
         libc::kill(pid, libc::SIGTERM);
     }
 
-    // Wait for the child to exit and assert it exited with code 0 (clean shutdown).
-    let status = child.wait().expect("wait for child");
+    // Wait for the child to exit with a timeout.
+    let mut exited = false;
+    let mut status = None;
+    for _ in 0..100 {
+        if let Ok(Some(s)) = child.try_wait() {
+            exited = true;
+            status = Some(s);
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    if !exited {
+        let _ = child.kill();
+        panic!("server failed to shut down within 5 seconds of SIGTERM");
+    }
+
+    let status = status.unwrap();
     assert_eq!(
         status.code(),
         Some(0),
