@@ -10,6 +10,7 @@ use crate::conn;
 use crate::root::Root;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -44,14 +45,18 @@ fn bind_reason(err: &io::Error) -> String {
     }
 }
 
-/// Open the root, apply the sandbox, bind the listener, print the success
-/// banner, then serve forever. Returns only on a fatal accept-loop end or a
-/// startup error; the banner is written only after a successful bind.
+/// Open the root, apply the sandbox, install signal handlers, bind the
+/// listener, print the success banner, then serve until a shutdown signal
+/// arrives. Returns only on shutdown, a fatal accept-loop error, or a startup
+/// error; the banner is written only after a successful bind.
 pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), ServeError> {
     let root = Root::open(&config.root).map_err(ServeError::Root)?;
     let listener =
         TcpListener::bind(config.listen).map_err(|err| ServeError::Bind(config.listen, err))?;
     crate::sandbox::apply(&config.root).map_err(ServeError::Sandbox)?;
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    crate::signal::install(&shutdown);
 
     // Bind succeeded: this is the startup-success banner.
     let _ = config::write_banner(config, crate::version::version_line(), &mut banner);
@@ -62,6 +67,7 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
         config.workers,
         Duration::from_secs(config::READ_TIMEOUT_SECS),
         config.write_timeout,
+        &shutdown,
     )
     .map_err(ServeError::Serve)
 }
@@ -72,6 +78,7 @@ fn serve(
     workers: usize,
     read_timeout: Duration,
     write_timeout: Duration,
+    shutdown: &AtomicBool,
 ) -> io::Result<()> {
     let root = Arc::new(root);
     // Rendezvous channel: a send blocks until a worker is waiting to receive,
@@ -88,18 +95,67 @@ fn serve(
         }));
     }
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                if tx.send(stream).is_err() {
-                    break; // all workers have gone away
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+
+        listener.set_nonblocking(true)?;
+
+        loop {
+            if shutdown.load(Ordering::Acquire) {
+                break;
+            }
+
+            let mut pollfd = libc::pollfd {
+                fd: listener.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let res = unsafe { libc::poll(&mut pollfd, 1, -1) };
+            if res < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false)?;
+                    if tx.send(stream).is_err() {
+                        break; // all workers have gone away
+                    }
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e);
                 }
             }
-            // Per-accept errors (e.g. fd exhaustion) are transient and silent.
-            Err(_) => continue,
         }
     }
 
+    #[cfg(not(unix))]
+    {
+        for stream in listener.incoming() {
+            if shutdown.load(Ordering::Acquire) {
+                break;
+            }
+            match stream {
+                Ok(stream) => {
+                    if tx.send(stream).is_err() {
+                        break; // all workers have gone away
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    // Close the channel so workers drain and exit after finishing in-flight
+    // connections.
     drop(tx);
     for handle in handles {
         let _ = handle.join();
@@ -134,6 +190,9 @@ mod tests {
     use std::io::Read as _;
     use std::net::{Shutdown, SocketAddr, TcpStream};
 
+    /// A shutdown flag that is never set, for tests that don't exercise shutdown.
+    static NEVER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
     fn request(addr: SocketAddr, selector: &[u8]) -> Vec<u8> {
         let mut client = TcpStream::connect(addr).expect("connect");
         client.write_all(selector).expect("write selector");
@@ -157,6 +216,7 @@ mod tests {
                 4,
                 Duration::from_secs(5),
                 Duration::from_secs(5),
+                &NEVER_SHUTDOWN,
             );
         });
 
@@ -178,6 +238,7 @@ mod tests {
                 4,
                 Duration::from_secs(5),
                 Duration::from_secs(5),
+                &NEVER_SHUTDOWN,
             );
         });
 
@@ -209,5 +270,84 @@ mod tests {
             format!("could not bind {addr}: address already in use")
         );
         assert!(banner.is_empty(), "banner must not print on bind failure");
+    }
+
+    #[test]
+    fn shutdown_flag_stops_accept_loop() {
+        let site = TempSite::new();
+        site.write("a.txt", b"hi\n");
+        let root = Root::open(site.path()).expect("open root");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let handle = thread::spawn(move || {
+            serve(
+                listener,
+                root,
+                4,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                &shutdown_clone,
+            )
+        });
+
+        // Verify the server is working first.
+        assert_eq!(request(addr, b"a.txt\n"), b"hi\n");
+
+        // Set the shutdown flag and connect to wake the accept loop.
+        shutdown.store(true, std::sync::atomic::Ordering::Release);
+        // A connection attempt wakes the blocked accept() even without EINTR.
+        let _ = TcpStream::connect(addr);
+
+        // The server should exit within a reasonable time.
+        let result = handle.join().expect("server thread should not panic");
+        assert!(result.is_ok(), "server should exit cleanly on shutdown");
+    }
+
+    #[test]
+    fn in_flight_request_completes_before_shutdown() {
+        let site = TempSite::new();
+        site.write("big.txt", b"hello from shutdown test\n");
+        let root = Root::open(site.path()).expect("open root");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let handle = thread::spawn(move || {
+            serve(
+                listener,
+                root,
+                4,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                &shutdown_clone,
+            )
+        });
+
+        // Start a request, then signal shutdown while it's in flight.
+        let mut client = TcpStream::connect(addr).expect("connect");
+        client.write_all(b"big.txt\n").expect("write selector");
+        client.shutdown(Shutdown::Write).expect("shutdown write");
+
+        // Read the first byte of the response to ensure it's in flight.
+        let mut first_byte = [0u8; 1];
+        client.read_exact(&mut first_byte).expect("read first byte");
+        assert_eq!(first_byte[0], b'h');
+
+        // Signal shutdown after the request is in flight.
+        shutdown.store(true, std::sync::atomic::Ordering::Release);
+
+        // The in-flight request should still complete with the rest of the response.
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).expect("read response");
+        assert_eq!(response, b"ello from shutdown test\n");
+
+        // Wake the accept loop so it sees the flag.
+        let _ = TcpStream::connect(addr);
+        let result = handle.join().expect("server thread should not panic");
+        assert!(result.is_ok(), "server should exit cleanly on shutdown");
     }
 }
