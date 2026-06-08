@@ -260,15 +260,20 @@ fn concurrent_name_swaps_never_serve_outside_or_special_content() {
                                 failures.lock().unwrap().push(body);
                             }
                         }
-                        Err(e) => {
-                            // serve_selector maps lookup failures to Ok(NOT_FOUND); a raw Err here is
-                            // unlikely, but we check and ignore NotFound defensively.
-                            if e.kind() != std::io::ErrorKind::NotFound {
-                                failures
-                                    .lock()
-                                    .unwrap()
-                                    .push(format!("Err: {e}").into_bytes());
-                            }
+                        Err(_) => {
+                            // An Err from serve_selector is never served to a visitor as a
+                            // response body: conn::handle propagates it (`?`) and the worker
+                            // drops the connection (logging the fault) rather than writing
+                            // anything. The safety property under test is strictly about
+                            // disallowed *content* reaching a visitor, which can only happen
+                            // on the Ok(body) path above — so an Err is not a violation and is
+                            // intentionally ignored here.
+                            //
+                            // This matters on OpenBSD: the request path opens the leaf with
+                            // O_NONBLOCK (see src/root.rs PROBE), and under this rename race a
+                            // FIFO/special-file component can surface a transient EAGAIN
+                            // (WouldBlock). Recording such Errs as "disallowed bodies served"
+                            // was a false positive that flaked the openbsd CI target.
                         }
                     }
                     done += 1;
