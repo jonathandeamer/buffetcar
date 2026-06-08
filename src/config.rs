@@ -63,21 +63,20 @@ pub(crate) fn write_banner(
     mut err: impl Write,
 ) -> io::Result<()> {
     writeln!(err, "{version_line}")?;
-    #[cfg(target_os = "openbsd")]
-    writeln!(
-        err,
-        "serving {} on {} (sandbox: pledge/unveil active)",
-        config.root.display(),
-        config.listen
-    )?;
-    #[cfg(not(target_os = "openbsd"))]
-    writeln!(
-        err,
-        "serving {} on {}",
-        config.root.display(),
-        config.listen
-    )?;
-    Ok(())
+    match crate::sandbox::status() {
+        Some(status) => writeln!(
+            err,
+            "serving {} on {} ({status})",
+            config.root.display(),
+            config.listen
+        ),
+        None => writeln!(
+            err,
+            "serving {} on {}",
+            config.root.display(),
+            config.listen
+        ),
+    }
 }
 
 fn validate_serve(args: ServeArgs) -> Result<ServeConfig, CliError> {
