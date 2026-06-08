@@ -68,3 +68,20 @@ Default-suite tests (all run by `make check`):
 Optional reference suite (NOT in `make check`):
 
 - **`tests/nexd_contract.rs`** — *optional, reference-only* characterization of the Go `nexd` server, gated behind the `nexd-contract` feature and excluded from `make check`. It builds the local Go `nexd` and sends real TCP requests. Tests named `nexd_legacy_behavior_*` pin unsafe behavior buffetcar **deliberately inverts**; the rest pin protocol-compatible behavior to preserve. Requires a Go toolchain and the `nexd` checkout at `../nexd` (or `NEXD_REPO=/path`); the first build fetches the Mercurial-hosted `hg.sr.ht/~m15o/nex-pfm` module (`go mod download` to pre-warm). The suite binds a fixed `127.0.0.1:1900`, so back-to-back runs can intermittently hit a `TIME_WAIT` port-reuse race. `tests/common/mod.rs` is shared harness only for this suite.
+
+## Production-readiness roadmap
+
+The server is functionally complete and secure; the remaining gaps to "robust production server" are operational. Tracked as open issues:
+
+- **[#28 — Observability: structured server-side logging](https://github.com/jonathandeamer/buffetcar/issues/28)** — the headline gap. The server is silent today: per-connection `Err`s and worker panics are dropped (`let _ =` in `src/server.rs`). Design-first; respects no-leakage, signal-safety, and the OpenBSD `stdio` pledge.
+- **[#29 — Abuse resistance: per-IP connection/rate limits](https://github.com/jonathandeamer/buffetcar/issues/29)** — timeouts bound a slow client to ~35s of worker-hold, but there is no per-IP cap, so ~128 slow clients can saturate the pool. Design-first, **human-merge** (threat model).
+- **[#27 — Tune the TCP listen backlog](https://github.com/jonathandeamer/buffetcar/issues/27)** — `good first issue`. `TcpListener::bind` takes the OS default backlog; set it explicitly via the `rustix` `net` feature (already a dependency).
+
+### Known future considerations (deliberately not yet filed)
+
+Parked here so we revisit them rather than rediscover them. Each is a decision as much as a feature; the right outcome may be "document why not."
+
+- **Shutdown drain deadline** — graceful drain is bounded only by the 30s write timeout; there is no forced-exit fallback if a worker wedges.
+- **Dual-stack bind** — `serve` takes a single `SocketAddr`, so one process cannot serve IPv4 and IPv6 simultaneously (operators run two instances or bind `::`).
+- **systemd `sd_notify` readiness + socket activation** — deployment-adjacent (arguably the release tooling that is out of scope), parked rather than filed.
+
