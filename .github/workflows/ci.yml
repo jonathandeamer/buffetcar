@@ -74,6 +74,7 @@ jobs:
             doas -u ci /usr/bin/env \
               HOME=/home/ci \
               PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+              RUST_TEST_THREADS=1 \
               make check < /dev/null
 
   deny:
