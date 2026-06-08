@@ -53,13 +53,24 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
     let root = Root::open(&config.root).map_err(ServeError::Root)?;
     let listener =
         TcpListener::bind(config.listen).map_err(|err| ServeError::Bind(config.listen, err))?;
+    // The address the OS actually bound, which differs from the requested
+    // `config.listen` when an ephemeral port (`:0`) was requested. The banner
+    // reports this concrete address so operators (and tests) learn the live port.
+    let bound = listener
+        .local_addr()
+        .map_err(|err| ServeError::Bind(config.listen, err))?;
     crate::sandbox::apply(&config.root).map_err(ServeError::Sandbox)?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let wake_fd = crate::signal::install(&shutdown);
 
     // Bind succeeded: this is the startup-success banner.
-    let _ = config::write_banner(config, crate::version::version_line(), &mut banner);
+    let _ = config::write_banner(
+        &config.root,
+        bound,
+        crate::version::version_line(),
+        &mut banner,
+    );
 
     serve(
         listener,

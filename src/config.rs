@@ -57,25 +57,21 @@ pub(crate) fn validate_with_euid(command: Command, euid: u32) -> Result<RunMode,
     Ok(mode)
 }
 
+/// Write the startup-success banner. `listen` is the address the listener
+/// actually bound, which the caller reads from `local_addr()` — so when the
+/// operator requests an ephemeral port (`--listen 127.0.0.1:0`) the banner
+/// still reports the concrete `host:port` that is now accepting connections.
+/// Printed after a successful bind, it doubles as a readiness signal.
 pub(crate) fn write_banner(
-    config: &ServeConfig,
+    root: &Path,
+    listen: SocketAddr,
     version_line: &str,
     mut err: impl Write,
 ) -> io::Result<()> {
     writeln!(err, "{version_line}")?;
     match crate::sandbox::status() {
-        Some(status) => writeln!(
-            err,
-            "serving {} on {} ({status})",
-            config.root.display(),
-            config.listen
-        ),
-        None => writeln!(
-            err,
-            "serving {} on {}",
-            config.root.display(),
-            config.listen
-        ),
+        Some(status) => writeln!(err, "serving {} on {listen} ({status})", root.display()),
+        None => writeln!(err, "serving {} on {listen}", root.display()),
     }
 }
 
@@ -110,7 +106,7 @@ fn validate_root(root: Option<PathBuf>) -> Result<PathBuf, CliError> {
     let root = normalize_root(&root);
 
     let metadata = fs::symlink_metadata(&root)
-        .map_err(|_| CliError::new(format!("--root '{}': not a directory", root.display())))?;
+        .map_err(|err| CliError::new(format!("--root '{}': {err}", root.display())))?;
     if metadata.file_type().is_symlink() {
         return Err(CliError::new(format!(
             "--root '{}': final path component is a symlink",
@@ -316,6 +312,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reports_real_reason_for_missing_root() {
+        let site = TempSite::new();
+        let missing = site.path().join("does-not-exist");
+        let err = validate_with_euid(
+            Command::Serve(ServeArgs {
+                root: Some(missing.clone()),
+                listen: None,
+                workers: None,
+                write_timeout: None,
+            }),
+            1000,
+        )
+        .unwrap_err();
+        // The real stat failure is surfaced (not masked as "not a directory"),
+        // so operators can tell "missing" from "not a directory" from "denied".
+        assert!(
+            err.message()
+                .starts_with(&format!("--root '{}': ", missing.display())),
+            "message: {}",
+            err.message()
+        );
+        assert!(
+            err.message().contains("No such file or directory"),
+            "message: {}",
+            err.message()
+        );
+        assert!(
+            !err.message().contains("not a directory"),
+            "missing root should not be reported as 'not a directory': {}",
+            err.message()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_symlink_root() {
@@ -464,14 +494,9 @@ mod tests {
     #[test]
     fn formats_startup_banner() {
         let site = TempSite::new();
-        let config = ServeConfig {
-            root: site.path().to_path_buf(),
-            listen: DEFAULT_LISTEN,
-            workers: DEFAULT_WORKERS,
-            write_timeout: Duration::from_secs(DEFAULT_WRITE_TIMEOUT_SECS),
-        };
         let mut stderr = Vec::new();
-        write_banner(&config, "buffetcar 0.1.0", &mut stderr).expect("write banner");
+        write_banner(site.path(), DEFAULT_LISTEN, "buffetcar 0.1.0", &mut stderr)
+            .expect("write banner");
         let stderr = String::from_utf8(stderr).expect("banner utf8");
 
         assert!(
