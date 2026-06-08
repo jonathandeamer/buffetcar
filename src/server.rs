@@ -56,7 +56,7 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
     crate::sandbox::apply(&config.root).map_err(ServeError::Sandbox)?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    crate::signal::install(&shutdown);
+    let wake_fd = crate::signal::install(&shutdown);
 
     // Bind succeeded: this is the startup-success banner.
     let _ = config::write_banner(config, crate::version::version_line(), &mut banner);
@@ -68,10 +68,15 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
         Duration::from_secs(config::READ_TIMEOUT_SECS),
         config.write_timeout,
         &shutdown,
+        wake_fd,
     )
     .map_err(ServeError::Serve)
 }
 
+/// `wake_fd` is the read end of the shutdown self-pipe (see `crate::signal`).
+/// It is polled alongside the listener so a shutdown signal wakes the accept
+/// loop even with no pending connection; `-1` disables it (tests that drive
+/// shutdown by other means, or platforms without the pipe).
 fn serve(
     listener: TcpListener,
     root: Root,
@@ -79,6 +84,7 @@ fn serve(
     read_timeout: Duration,
     write_timeout: Duration,
     shutdown: &AtomicBool,
+    wake_fd: libc::c_int,
 ) -> io::Result<()> {
     let root = Arc::new(root);
     // Rendezvous channel: a send blocks until a worker is waiting to receive,
@@ -106,12 +112,27 @@ fn serve(
                 break;
             }
 
-            let mut pollfd = libc::pollfd {
-                fd: listener.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let res = unsafe { libc::poll(&mut pollfd, 1, -1) };
+            // Poll the listener and, when present, the shutdown self-pipe. A
+            // signal that sets the flag in the window between the check above
+            // and this poll has nothing to interrupt, so EINTR alone is racy;
+            // but the handler also writes a byte to the pipe, and a byte already
+            // buffered makes poll return immediately. Index 0 is the listener,
+            // index 1 the pipe read end (only polled when wake_fd >= 0).
+            let mut fds = [
+                libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: wake_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let nfds: libc::nfds_t = if wake_fd >= 0 { 2 } else { 1 };
+
+            let res = unsafe { libc::poll(fds.as_mut_ptr(), nfds, -1) };
             if res < 0 {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::Interrupted {
@@ -120,9 +141,23 @@ fn serve(
                 return Err(err);
             }
 
+            // Shutdown self-pipe activity means a signal arrived. On readable,
+            // drain it and loop so the flag check at the top breaks out. On a
+            // broken pipe (the write end should live for the whole process, so
+            // this is defensive), shut down rather than busy-loop on the bit.
+            if nfds == 2 && fds[1].revents != 0 {
+                if fds[1].revents & libc::POLLIN != 0 {
+                    drain_fd(wake_fd);
+                    continue;
+                }
+                break;
+            }
+
+            let listener_revents = fds[0].revents;
+
             // Fatal error or hangup on the listening socket descriptor itself.
             // Treating POLLHUP/POLLERR as fatal prevents infinite busy-looping on persistent bits.
-            if pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            if listener_revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionAborted,
                     "fatal listener socket error or hangup",
@@ -130,7 +165,7 @@ fn serve(
             }
 
             // Only proceed to accept if the socket has pending incoming connections
-            if pollfd.revents & libc::POLLIN == 0 {
+            if listener_revents & libc::POLLIN == 0 {
                 continue;
             }
 
@@ -153,6 +188,7 @@ fn serve(
 
     #[cfg(not(unix))]
     {
+        let _ = wake_fd; // self-pipe wakeup is a unix-only mechanism
         for stream in listener.incoming() {
             if shutdown.load(Ordering::Acquire) {
                 break;
@@ -175,6 +211,20 @@ fn serve(
         let _ = handle.join();
     }
     Ok(())
+}
+
+/// Drain all pending bytes from a non-blocking fd, discarding them. Used to
+/// empty the shutdown self-pipe after `poll` reports it readable so a single
+/// wakeup does not report readable forever.
+#[cfg(unix)]
+fn drain_fd(fd: libc::c_int) {
+    let mut buf = [0u8; 64];
+    loop {
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n <= 0 {
+            break;
+        }
+    }
 }
 
 fn worker_loop(
@@ -232,6 +282,7 @@ mod tests {
                 Duration::from_secs(5),
                 Duration::from_secs(5),
                 &NEVER_SHUTDOWN,
+                -1,
             );
         });
 
@@ -254,6 +305,7 @@ mod tests {
                 Duration::from_secs(5),
                 Duration::from_secs(5),
                 &NEVER_SHUTDOWN,
+                -1,
             );
         });
 
@@ -305,6 +357,7 @@ mod tests {
                 Duration::from_secs(5),
                 Duration::from_secs(5),
                 &shutdown_clone,
+                -1,
             )
         });
 
@@ -339,6 +392,7 @@ mod tests {
                 Duration::from_secs(5),
                 Duration::from_secs(5),
                 &shutdown_clone,
+                -1,
             )
         });
 
@@ -364,5 +418,72 @@ mod tests {
         let _ = TcpStream::connect(addr);
         let result = handle.join().expect("server thread should not panic");
         assert!(result.is_ok(), "server should exit cleanly on shutdown");
+    }
+
+    /// Setting the shutdown flag while the accept loop is blocked in `poll`
+    /// must wake the loop through the self-pipe, with **no** client connection
+    /// to nudge it. This is the deterministic form of the signal-delivery race:
+    /// before the self-pipe, a flag set between the loop's check and `poll(-1)`
+    /// left the loop blocked forever (the other shutdown tests have to connect
+    /// a client to wake it). Here we feed the pipe exactly as the signal handler
+    /// does and require the loop to exit on its own.
+    #[test]
+    fn signal_pipe_wakes_accept_loop_without_a_connection() {
+        let site = TempSite::new();
+        site.write("a.txt", b"hi\n");
+        let root = Root::open(site.path()).expect("open root");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // A self-pipe matching what `signal::install` builds (non-blocking ends).
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        for &fd in &fds {
+            unsafe {
+                let fl = libc::fcntl(fd, libc::F_GETFL);
+                libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+            }
+        }
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let r = serve(
+                listener,
+                root,
+                4,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                &shutdown_clone,
+                read_fd,
+            );
+            let _ = done_tx.send(r);
+        });
+
+        // Ensure the server has reached the accept loop and is blocked in poll.
+        assert_eq!(request(addr, b"a.txt\n"), b"hi\n");
+
+        // Trigger shutdown exactly as the signal handler does: set the flag,
+        // then write one byte to the pipe. Crucially, NO connection follows.
+        shutdown.store(true, Ordering::Release);
+        let byte = 1u8;
+        let n =
+            unsafe { libc::write(write_fd, std::ptr::addr_of!(byte) as *const libc::c_void, 1) };
+        assert_eq!(n, 1, "pipe write");
+
+        // The accept loop must exit promptly off the pipe wakeup alone.
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("serve must exit after self-pipe wakeup without a connection");
+        assert!(result.is_ok(), "server should exit cleanly on shutdown");
+
+        let _ = handle.join();
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
     }
 }
