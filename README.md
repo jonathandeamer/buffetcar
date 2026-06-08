@@ -1,10 +1,8 @@
 # buffetcar
 
-A server for Nex, the minimal smallnet protocol.
+A server for Nex, the minimal [small net](https://nightfall.city/nex/in/m15o/notes/nex-and-small-net.txt) protocol.
 
 Nex is a small protocol for publishing files over the internet ([spec](https://nightfall.city/nex/), TCP port 1900): a client sends one line naming what it wants, the server sends back the raw bytes of that file, or a generated listing if it named a directory, and closes the connection. There are no status codes, no content types, and no second request on the same connection. A listing is plain text whose links are lines beginning with `=> `.
-
-If you want to put a few files or a personal site online without running a web server, Nex is a [small net](https://nightfall.city/nex/in/m15o/notes/nex-and-small-net.txt) protocol built for that, and buffetcar is a server for it. The whole protocol is small by design, which is much of why people like it: a client or server is easy to write and easy to run.
 
 ## What buffetcar does
 
