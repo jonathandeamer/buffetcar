@@ -120,6 +120,20 @@ fn serve(
                 return Err(err);
             }
 
+            // Fatal error or hangup on the listening socket descriptor itself.
+            // Treating POLLHUP/POLLERR as fatal prevents infinite busy-looping on persistent bits.
+            if pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "fatal listener socket error or hangup",
+                ));
+            }
+
+            // Only proceed to accept if the socket has pending incoming connections
+            if pollfd.revents & libc::POLLIN == 0 {
+                continue;
+            }
+
             match listener.accept() {
                 Ok((stream, _)) => {
                     stream.set_nonblocking(false)?;
