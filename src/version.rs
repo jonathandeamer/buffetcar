@@ -37,49 +37,27 @@ fn format_version(name: &str, cargo_version: &str, git_describe: &str) -> String
     //   "abcdef1-dirty"                  — no tags, dirty
 
     let dirty = git_describe.ends_with("-dirty");
-    let base = if dirty {
-        git_describe.trim_end_matches("-dirty")
-    } else {
-        git_describe
-    };
+    let base = git_describe.trim_end_matches("-dirty");
 
-    // Try to parse as tag with optional commit-count + hash.
-    // A tag starts with 'v', e.g. "v0.1.0" or "v0.1.0-3-gabcdef1".
-    if let Some(rest) = base.strip_prefix('v') {
-        // Check for "version-count-ghash" pattern.
-        if let Some((tag_version, count_and_hash)) = split_describe(rest) {
-            let _ = tag_version; // The tag version — we use cargo_version for the primary number.
-            let (count, hash) = count_and_hash;
-            // Reconstruct the tag name from the parsed version.
-            let tag = format!("v{tag_version}");
-            return if dirty {
-                format!("{name} {cargo_version} ({count} commits after {tag}, {hash}, dirty)")
-            } else {
-                format!("{name} {cargo_version} ({count} commits after {tag}, {hash})")
-            };
-        }
-        // Exact tag match (possibly dirty).
-        return if dirty {
-            format!("{name} {cargo_version} (dirty)")
-        } else {
-            format!("{name} {cargo_version}")
-        };
+    // A post-tag describe ("v<tag>-<count>-g<hash>") is the only shape that
+    // expands the parenthetical. Everything else — exact tag, bare hash, or no
+    // git — collapses to the plain version line (plus a `(dirty)` marker).
+    if let Some((tag_version, count, hash)) = base.strip_prefix('v').and_then(split_describe) {
+        let suffix = if dirty { ", dirty" } else { "" };
+        return format!(
+            "{name} {cargo_version} ({count} commits after v{tag_version}, {hash}{suffix})"
+        );
     }
 
-    // No tag — bare hash (with or without dirty).
-    // Fall back to cargo version.
-    if dirty {
-        format!("{name} {cargo_version} (dirty)")
-    } else {
-        format!("{name} {cargo_version}")
-    }
+    let suffix = if dirty { " (dirty)" } else { "" };
+    format!("{name} {cargo_version}{suffix}")
 }
 
 /// Split a post-tag describe string like "0.1.0-3-gabcdef1" into
-/// ("0.1.0", ("3", "gabcdef1")).
+/// ("0.1.0", "3", "gabcdef1").
 ///
 /// Returns `None` for a plain version like "0.1.0".
-fn split_describe(rest: &str) -> Option<(&str, (&str, &str))> {
+fn split_describe(rest: &str) -> Option<(&str, &str, &str)> {
     // Find the hash suffix: last segment starting with 'g'.
     let hash_start = rest.rfind("-g")?;
     let hash = &rest[hash_start + 1..]; // "gabcdef1"
@@ -95,7 +73,7 @@ fn split_describe(rest: &str) -> Option<(&str, (&str, &str))> {
         return None;
     }
 
-    Some((tag_version, (count, hash)))
+    Some((tag_version, count, hash))
 }
 
 #[cfg(test)]
