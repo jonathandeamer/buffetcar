@@ -4,11 +4,37 @@ A server for Nex, the minimal [small net](https://nightfall.city/nex/in/m15o/not
 
 Nex is a small protocol for publishing files over the internet ([spec](https://nightfall.city/nex/), TCP port 1900): a client sends one line naming what it wants, the server sends back the raw bytes of that file, or a generated listing if it named a directory, and closes the connection. There are no status codes, no content types, and no second request on the same connection. A listing is plain text whose links are lines beginning with `=> `.
 
+## Try it
+
+buffetcar serves its own source tree over Nex at `nex://nex.jonathandeamer.com/buffetcar/`. The whole protocol is one line of text, so you don't need a Nex client to look — you can speak it by hand. Ask for the source directory and you get a listing of this repo:
+
+```
+$ printf '/buffetcar/\n' | nc nex.jonathandeamer.com 1900
+=> CLAUDE.md
+=> CONTRIBUTING.md
+=> Cargo.lock
+=> Cargo.toml
+...
+=> docs/
+=> src/
+=> tests/
+```
+
+Note what isn't there: the repo's `AGENTS.md` is a symlink, so buffetcar leaves it out of the listing rather than follow it — the policy below, demonstrated live. Name a file that is served and you get its raw bytes, this very README served by the thing it describes:
+
+```
+$ printf '/buffetcar/README.md\n' | nc nex.jonathandeamer.com 1900
+# buffetcar
+...
+```
+
+Point a Nex client like [Lagrange](https://skyjake.fi/@lagrange) at `nex://nex.jonathandeamer.com/buffetcar/` to browse it properly.
+
 ## What buffetcar does
 
 Point buffetcar at a directory and it serves that tree over Nex. A request for a file returns the file. A request for a directory returns its `index` file if one exists, or otherwise a listing of the directory's contents in name order. It is a single binary with no configuration files and nothing to tune for correctness.
 
-The rules about what it will serve are fixed rather than configurable (see [What you can serve](#what-you-can-serve)). There is no option to follow symlinks, serve dotfiles, or run as root, because those are the choices that turn a file server into a way out of its own directory. The resolver opens each component of a request directly and refuses symlinks as it goes, so a request can never escape the root you gave it.
+Most of buffetcar's design is about what it refuses to do. The rules about what it will serve are fixed rather than configurable (see [What you can serve](#what-you-can-serve)). There is no option to follow symlinks, serve dotfiles, or run as root, because those are the choices that turn a file server into a way out of its own directory. The resolver opens each component of a request directly and refuses symlinks as it goes, so a request can never escape the root you gave it.
 
 It is written in Rust on a `rustix` `openat`-based resolver; the design notes live in `docs/`.
 
