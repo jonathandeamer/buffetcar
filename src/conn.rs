@@ -35,6 +35,7 @@ pub(crate) fn handle(
     read_timeout: Duration,
     write_timeout: Duration,
 ) -> io::Result<()> {
+    stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(write_timeout))?;
 
