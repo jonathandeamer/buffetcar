@@ -28,7 +28,7 @@ $ printf '/buffetcar/README.md\n' | nc nex.jonathandeamer.com 1900
 ...
 ```
 
-Point a Nex client like [Lagrange](https://skyjake.fi/@lagrange) at `nex://nex.jonathandeamer.com/buffetcar/` to browse it properly.
+Point a Nex client like [Lagrange](https://github.com/skyjake/lagrange) at `nex://nex.jonathandeamer.com/buffetcar/` to browse it properly.
 
 ## What buffetcar does
 
