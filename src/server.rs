@@ -10,6 +10,7 @@ use crate::conn;
 use crate::root::Root;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::fd::FromRawFd as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -52,7 +53,7 @@ fn bind_reason(err: &io::Error) -> String {
 pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), ServeError> {
     let root = Root::open(&config.root).map_err(ServeError::Root)?;
     let listener =
-        TcpListener::bind(config.listen).map_err(|err| ServeError::Bind(config.listen, err))?;
+        bind_with_backlog(config.listen).map_err(|err| ServeError::Bind(config.listen, err))?;
     // The address the OS actually bound, which differs from the requested
     // `config.listen` when an ephemeral port (`:0`) was requested. The banner
     // reports this concrete address so operators (and tests) learn the live port.
@@ -82,6 +83,46 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
         wake_fd,
     )
     .map_err(ServeError::Serve)
+}
+
+/// TCP listen backlog: number of fully-established connections the kernel
+/// will queue before refusing new ones with RST / connection timeout.
+///
+/// 128 matches the traditional Linux `SOMAXCONN` ceiling and is a
+/// reasonable portable baseline. The OS may clamp it down to its own
+/// kernel limit but will never raise it, so requesting 128 is safe
+/// even on systems with a lower cap.
+const LISTEN_BACKLOG: i32 = 128;
+
+/// Create a `TcpListener` on `addr` with an explicit listen backlog.
+///
+/// `std::net::TcpListener::bind` uses an undocumented OS-chosen backlog.
+/// This function makes the value explicit and documents the reasoning.
+/// It also replicates the `SO_REUSEADDR` that `TcpListener::bind` sets
+/// on Unix, so a server restart while the port is in `TIME_WAIT` still
+/// succeeds.
+fn bind_with_backlog(addr: SocketAddr) -> io::Result<TcpListener> {
+    use rustix::net::sockopt;
+    use rustix::net::{self, AddressFamily, SocketType};
+
+    let family = match addr {
+        SocketAddr::V4(_) => AddressFamily::INET,
+        SocketAddr::V6(_) => AddressFamily::INET6,
+    };
+    let sock = net::socket(family, SocketType::STREAM, None)
+        .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+    sockopt::set_socket_reuseaddr(&sock, true)
+        .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+    net::bind(&sock, &addr).map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+    net::listen(&sock, LISTEN_BACKLOG)
+        .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+
+    // SAFETY: `sock` is a valid, fully-bound, listening TCP socket fd.
+    // `into_raw_fd` consumes the OwnedFd so ownership is transferred once.
+    unsafe {
+        use std::os::fd::IntoRawFd as _;
+        Ok(TcpListener::from_raw_fd(sock.into_raw_fd()))
+    }
 }
 
 /// `wake_fd` is the read end of the shutdown self-pipe (see `crate::signal`).
