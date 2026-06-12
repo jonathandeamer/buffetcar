@@ -88,22 +88,24 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
 /// TCP listen backlog: number of fully-established connections the kernel
 /// will queue before refusing new ones with RST / connection timeout.
 ///
-/// 128 matches the traditional Linux `SOMAXCONN` ceiling and is a
-/// reasonable portable baseline. The OS may clamp it down to its own
-/// kernel limit but will never raise it, so requesting 128 is safe
-/// even on systems with a lower cap.
+/// 128 is a conservative, portable baseline; it also matches the value
+/// `std`'s `TcpListener::bind` hard-codes, so this preserves the previous
+/// behaviour while making the number explicit. The kernel clamps the
+/// request down to its own limit (`net.core.somaxconn`, which defaults to
+/// 4096 on modern Linux) and never raises it, so 128 is safe everywhere.
 const LISTEN_BACKLOG: i32 = 128;
 
 /// Create a `TcpListener` on `addr` with an explicit listen backlog.
 ///
-/// `std::net::TcpListener::bind` uses an undocumented OS-chosen backlog.
-/// This function makes the value explicit and documents the reasoning.
-/// It also replicates the `SO_REUSEADDR` that `TcpListener::bind` sets
-/// on Unix, so a server restart while the port is in `TIME_WAIT` still
-/// succeeds.
+/// `std::net::TcpListener::bind` hard-codes a listen backlog of 128 with
+/// no way to change or document it. This function makes the value an
+/// explicit, named constant. It also replicates the socket setup
+/// `TcpListener::bind` performs on Unix — `SO_REUSEADDR` (so a restart
+/// while the port is in `TIME_WAIT` still succeeds) and `SOCK_CLOEXEC`.
 fn bind_with_backlog(addr: SocketAddr) -> io::Result<TcpListener> {
     use rustix::net::sockopt;
     use rustix::net::{self, AddressFamily, SocketType};
+    use std::os::fd::AsRawFd as _;
 
     let family = match addr {
         SocketAddr::V4(_) => AddressFamily::INET,
@@ -111,6 +113,14 @@ fn bind_with_backlog(addr: SocketAddr) -> io::Result<TcpListener> {
     };
     let sock = net::socket(family, SocketType::STREAM, None)
         .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+    // Match `TcpListener::bind`, which creates the socket close-on-exec; without
+    // this the listening fd would leak across an `exec`. `SOCK_CLOEXEC` at
+    // creation is not portable (macOS lacks it), so set `FD_CLOEXEC` here. The
+    // brief non-atomic window is harmless: this runs once at single-threaded
+    // startup, before any worker threads exist to fork/exec.
+    if unsafe { libc::fcntl(sock.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     sockopt::set_socket_reuseaddr(&sock, true)
         .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
     net::bind(&sock, &addr).map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
