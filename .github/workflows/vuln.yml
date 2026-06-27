@@ -1,13 +1,12 @@
 name: vuln
 
-# Separate from ci so it has its own pass/fail check and — the point of a
-# dedicated workflow — a weekly schedule. New CVEs are disclosed against code
-# you've already shipped and aren't touching; the cron re-scans unchanged main
-# so a fresh advisory on a dependency turns this red without a push.
+# Scheduled (and on-demand) advisory scan. Per-push/PR advisory coverage already
+# comes from CI's `cargo deny` (`check advisories licenses bans sources`), so
+# this workflow's job is the part CI can't do: re-scan unchanged main on a cron
+# so a newly-disclosed CVE on a dependency you aren't touching turns it red
+# without a push. Run it by hand anytime with `gh workflow run vuln.yml`.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
   schedule:
     - cron: "0 7 * * 1" # Mondays 07:00 UTC
 
