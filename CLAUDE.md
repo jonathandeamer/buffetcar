@@ -45,7 +45,7 @@ The plan of record is **`docs/superpowers/specs/2026-06-06-multi-user-nex-server
 
 That design is now **implemented**. The earlier static-site choices it reversed are gone: `cap-std` has been removed in favour of an explicit fd-relative resolver (`rustix` `openat` + `O_NOFOLLOW` + `fstat`; `openat2` is Linux-only optional hardening), the `serve`/`check` CLI is hand-parsed instead of using `clap`, and resolution is split across `selector` + `root` (+ `listing`). The daemon (`server::run`) opens the root **once at startup** and shares it across a fixed worker-thread pool. `serve_selector(root: &Path, selector: &str) -> io::Result<Vec<u8>>` survives as a thin test/library wrapper that opens a `Root` per call.
 
-The spec items are all implemented: both the **README** stating the publishing rules and the **OpenBSD `pledge`/`unveil`** sandbox are done (OpenBSD target compatibility verified in CI). The previously known issue — the race stress test's flaky positive-observation assertion — has been fixed (see Tests).
+The spec items are all implemented: both the **README** stating the publishing rules and the **OpenBSD `pledge`/`unveil`** sandbox are done (OpenBSD target compatibility verified via the on-demand `openbsd.yml` workflow). The previously known issue — the race stress test's flaky positive-observation assertion — has been fixed (see Tests).
 
 ## Core principle (drives most decisions)
 
@@ -69,6 +69,13 @@ Optional reference suite (NOT in `make check`):
 
 - **`tests/nexd_contract.rs`** — *optional, reference-only* characterization of the Go `nexd` server, gated behind the `nexd-contract` feature and excluded from `make check`. It builds the local Go `nexd` and sends real TCP requests. Tests named `nexd_legacy_behavior_*` pin unsafe behavior buffetcar **deliberately inverts**; the rest pin protocol-compatible behavior to preserve. Requires a Go toolchain and the `nexd` checkout at `../nexd` (or `NEXD_REPO=/path`); the first build fetches the Mercurial-hosted `hg.sr.ht/~m15o/nex-pfm` module (`go mod download` to pre-warm). The suite binds a fixed `127.0.0.1:1900`, so back-to-back runs can intermittently hit a `TIME_WAIT` port-reuse race. `tests/common/mod.rs` is shared harness only for this suite.
 
+## Deployment
+
+Production runs on a single AWS Lightsail box (Debian), serving `/srv/nex` on port 1900. Deployment is **committed and automatic** — no manual step:
+
+- **`.github/workflows/deploy.yml`** triggers on a successful **CI** run on `main`. It cross-compiles the `x86_64-unknown-linux-musl` binary, `scp`s it into `/usr/local/bin/buffetcar`, rsyncs the repo into the served tree (`/srv/nex/buffetcar/`, excluding `target/`, `.git/`, and `contrib/`), installs the systemd unit, `daemon-reload`s, and restarts the service. Any merge to `main` therefore redeploys.
+- **`contrib/buffetcar.service`** is the version-controlled, hardened unit the workflow installs. It runs the server **sandboxed as `DynamicUser=yes`** (never a login user, never root — the same no-root invariant the code enforces) with `ProtectSystem=strict`, `NoNewPrivileges`, and the read-only restrictions. **Keep it hardened, and edit it in `contrib/`, not on the box** (a redeploy overwrites the box copy). buffetcar serves read-only on the unprivileged port 1900, so it needs no capabilities, no `ReadWritePaths`, and no privileged user — don't add them.
+
 ## Production-readiness roadmap
 
 The server is functionally complete and secure; the remaining gaps to "robust production server" are operational. Tracked as open issues:
@@ -83,5 +90,5 @@ Parked here so we revisit them rather than rediscover them. Each is a decision a
 
 - **Shutdown drain deadline** — graceful drain is bounded only by the 30s write timeout; there is no forced-exit fallback if a worker wedges.
 - **Dual-stack bind** — `serve` takes a single `SocketAddr`, so one process cannot serve IPv4 and IPv6 simultaneously (operators run two instances or bind `::`).
-- **systemd `sd_notify` readiness + socket activation** — deployment-adjacent (arguably the release tooling that is out of scope), parked rather than filed.
+- **systemd `sd_notify` readiness + socket activation** — a refinement to the [Deployment](#deployment) unit, which uses a plain `Restart=always` today. Parked rather than filed.
 
