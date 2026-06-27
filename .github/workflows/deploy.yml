@@ -49,10 +49,19 @@ jobs:
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='target/' \
+            --exclude='contrib/' \
             --rsync-path='sudo rsync' \
             -e "ssh -i ~/.ssh/deploy_key" \
             . \
             admin@nex.jonathandeamer.com:/srv/nex/buffetcar/
+
+      - name: Install systemd unit
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            contrib/buffetcar.service \
+            admin@nex.jonathandeamer.com:/tmp/buffetcar.service
+          ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
+            'sudo install -m 644 /tmp/buffetcar.service /etc/systemd/system/buffetcar.service && rm /tmp/buffetcar.service && sudo systemctl daemon-reload'
 
       - name: Restart service
         run: |

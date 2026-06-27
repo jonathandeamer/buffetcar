@@ -1,0 +1,37 @@
+# /etc/systemd/system/buffetcar.service
+#
+# Hardened systemd unit for the buffetcar Nex server. Installed by the Deploy
+# workflow (.github/workflows/deploy.yml). buffetcar serves /srv/nex read-only
+# on the unprivileged port 1900, so it needs no privileges, no write access,
+# and no capabilities — run it as a throwaway sandboxed user, never as a login
+# account with sudo.
+
+[Unit]
+Description=buffetcar Nex server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/buffetcar serve --root /srv/nex --listen 0.0.0.0:1900
+Restart=always
+RestartSec=5
+
+# Run as a throwaway unprivileged user instead of a login account. Port 1900 is
+# unprivileged, so no AmbientCapabilities are needed.
+DynamicUser=yes
+
+# Sandboxing (mirrors the design: DynamicUser + ProtectSystem=strict +
+# NoNewPrivileges, plus defence-in-depth). The served tree is read-only, so the
+# whole filesystem can stay read-only with no ReadWritePaths.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target
