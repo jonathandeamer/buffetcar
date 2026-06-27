@@ -26,7 +26,7 @@ Commits are enforced as **Conventional Commits** by `.githooks/commit-msg` once 
 
 ## Git workflow
 
-`main` is protected with **required status checks**: `fmt · clippy · test` on Linux, macOS, and OpenBSD; `cargo deny`; and CodeQL (`Analyze (rust)` and `Analyze (actions)`). Do **not** push directly to `main`, even when you hold bypass permission — bypassing skips CI and can land a red `main`. Land work via a pull request: push a feature branch and `gh pr create`, let the checks run, then merge. Keep local commits green with `make check` before pushing, but treat CI as the gate that actually guards `main`.
+`main` is protected with **required status checks**: `fmt · clippy · test` on Linux and macOS; `cargo deny`; and CodeQL (`Analyze (rust)` and `Analyze (actions)`). OpenBSD is **not** a required check — it runs on demand only (see the CI note below). Do **not** push directly to `main`, even when you hold bypass permission — bypassing skips CI and can land a red `main`. Land work via a pull request: push a feature branch and `gh pr create`, let the checks run, then merge. Keep local commits green with `make check` before pushing, but treat CI as the gate that actually guards `main`.
 
 ### Agentic workflow (Claude sessions)
 
@@ -37,7 +37,7 @@ The operational version of the rule above — how to land work when the user ask
 - **Ship flow:** after the user OKs shipping, `make check` locally → `git push -u origin <branch>` → `gh pr create` (no AI co-author trailers, per the no-attribution rule) → wait for the three required checks → `gh pr merge --squash --delete-branch`. There is no bot reviewer, so CI is the only merge gate, and a green local `make check` makes green CI near-certain. `gh pr merge --auto --squash --delete-branch` merges the moment checks pass instead of polling.
 - **When NOT to self-merge:** push and open the PR but leave the merge to the human when the change touches a **security invariant** (the `root`/`selector` resolver, the `sandbox`, or the `document not found` no-leakage contract), is hard to reverse or outward-facing, or you're unsure. A pure-docs change is the opposite end — fine to self-merge.
 - **Edit ≠ ship.** Making edits and running `make check` is the default unit of work; pushing, opening a PR, and merging each need an explicit go-ahead. Approval to *write* a change is not approval to *land* it.
-- **CI note:** the OpenBSD job (`fmt · clippy · test (openbsd)`) runs the gate as an unprivileged `ci` user (`doas` inside the QEMU VM), so the run-as-root refusal does not apply. It is a **required** status check. It boots a QEMU VM and `pkg_add`s from OpenBSD mirrors, so a transient infra failure (VM boot, mirror hiccup) may need a re-run rather than indicating a real break.
+- **CI note:** the OpenBSD job (`fmt · clippy · test (openbsd)`) lives in its own `openbsd.yml` workflow and runs **on demand only** (`gh workflow run openbsd.yml --ref <branch>`), not on every push/PR — it is slow (~3 min) and prone to transient infra flakes (VM boot, mirror hiccups), and OpenBSD is a portability target, not a deployment one (production ships a musl Linux binary). It is **not** a required check; run it by hand before touching anything OpenBSD-specific (the `sandbox`) or cutting a release. It runs the gate as an unprivileged `ci` user (`doas` inside the QEMU VM), so the run-as-root refusal does not apply.
 
 ## Design authority
 

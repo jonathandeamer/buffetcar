@@ -1,0 +1,50 @@
+name: OpenBSD
+
+# On-demand only. OpenBSD is a portability target (the pledge/unveil sandbox),
+# not a deployment target — production ships a musl Linux binary. The QEMU VM
+# job is slow (~3 min) and prone to transient infra flakes (VM boot, mirror
+# hiccups), so it is kept off the per-push/PR gate. Run it by hand before
+# touching anything OpenBSD-specific (the sandbox) or cutting a release:
+#
+#   gh workflow run openbsd.yml --ref <branch>
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  openbsd:
+    name: fmt · clippy · test (openbsd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Test in OpenBSD VM
+        uses: vmactions/openbsd-vm@fcf799d7ce9c305ad89eabef1fb2fa5c1c42d0ee
+        with:
+          usesh: true
+          # The VM runs scripts as root, but buffetcar refuses to run as root
+          # (a security invariant the check/serve contract tests assert), so run
+          # the gate as an unprivileged user that owns the synced workspace.
+          #
+          # Use doas (OpenBSD base) rather than su to drop privileges: OpenBSD su
+          # treats `-c` as a login-class, not a command, so `su -l ci -c "cmd"`
+          # silently falls into an interactive login shell that blocks on stdin.
+          # doas runs the command directly with no shell-parsing ambiguity and
+          # preserves the working directory. HOME/PATH are set explicitly so
+          # cargo has a writable home and finds the toolchain in /usr/local/bin.
+          prepare: |
+            pkg_add -I rust rust-rustfmt rust-clippy
+            useradd -m -s /bin/ksh ci
+            printf 'permit nopass root as ci\n' > /etc/doas.conf
+          run: |
+            set -eux
+            chown -R ci .
+            doas -u ci /usr/bin/env \
+              HOME=/home/ci \
+              PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+              RUST_TEST_THREADS=1 \
+              make check < /dev/null
