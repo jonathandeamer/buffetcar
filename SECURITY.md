@@ -22,7 +22,7 @@ buffetcar's primary threat is an **untrusted Nex selector from an anonymous TCP 
 - **Dotfiles are an invariant**, not a default: there is no flag to enable serving them.
 - **Request size is bounded** at a hardcoded constant; there is no way to send an unbounded selector.
 - **Read timeout is hardcoded** at 5 s; a slow-writing client cannot hold a worker indefinitely.
-- **`--max-conns`** caps the worker pool; connections beyond the cap queue in the kernel backlog and are then refused — no unbounded thread or memory growth.
+- **`--workers`** caps the worker pool; connections beyond the cap queue in the kernel backlog and are then refused — no unbounded thread or memory growth.
 
 On OpenBSD, `pledge`/`unveil` add a second OS-level wall around the live process.
 
@@ -38,6 +38,6 @@ On OpenBSD, `pledge`/`unveil` add a second OS-level wall around the live process
 ### Out of scope
 
 - Absence of TLS — the Nex protocol has none by design; buffetcar makes no claim about transport confidentiality
-- Rate limiting beyond `--max-conns` — firewall policy is the right layer
+- Rate limiting beyond `--workers` — firewall policy is the right layer
 - Issues that require pre-existing code execution on the server
 - Issues only affecting a forked or modified build
