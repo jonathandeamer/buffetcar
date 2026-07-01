@@ -22,6 +22,7 @@ pub(crate) struct ServeConfig {
     pub(crate) root: PathBuf,
     pub(crate) listen: SocketAddr,
     pub(crate) workers: usize,
+    pub(crate) max_conns_per_ip: u32,
     pub(crate) write_timeout: Duration,
 }
 
@@ -76,11 +77,18 @@ pub(crate) fn write_banner(
 }
 
 fn validate_serve(args: ServeArgs) -> Result<ServeConfig, CliError> {
+    let root = validate_root(args.root)?;
+    let listen = validate_listen(args.listen)?;
+    let workers = validate_workers(args.workers)?;
+    let max_conns_per_ip = validate_max_conns_per_ip(args.max_conns_per_ip, workers)?;
+    let write_timeout = Duration::from_secs(validate_write_timeout(args.write_timeout)?);
+
     Ok(ServeConfig {
-        root: validate_root(args.root)?,
-        listen: validate_listen(args.listen)?,
-        workers: validate_workers(args.workers)?,
-        write_timeout: Duration::from_secs(validate_write_timeout(args.write_timeout)?),
+        root,
+        listen,
+        workers,
+        max_conns_per_ip,
+        write_timeout,
     })
 }
 
@@ -142,6 +150,12 @@ fn validate_workers(workers: Option<String>) -> Result<usize, CliError> {
     parse_range("--workers", workers, DEFAULT_WORKERS, 1, 1024, "")
 }
 
+fn validate_max_conns_per_ip(raw: Option<String>, workers: usize) -> Result<u32, CliError> {
+    let default = u32::try_from((workers / 8).max(1)).expect("validated workers fit in u32");
+    let max = u32::try_from(workers + 1).expect("validated workers + 1 fit in u32");
+    parse_range("--max-conns-per-ip", raw, default, 1, max, "")
+}
+
 fn validate_write_timeout(timeout: Option<String>) -> Result<u64, CliError> {
     parse_range(
         "--write-timeout",
@@ -200,6 +214,7 @@ mod tests {
                 root: Some(site.path().to_path_buf()),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -212,6 +227,7 @@ mod tests {
                 root: site.path().to_path_buf(),
                 listen: DEFAULT_LISTEN,
                 workers: DEFAULT_WORKERS,
+                max_conns_per_ip: 16,
                 write_timeout: Duration::from_secs(DEFAULT_WRITE_TIMEOUT_SECS),
             })
         );
@@ -225,6 +241,7 @@ mod tests {
                 root: Some(site.path().to_path_buf()),
                 listen: Some("127.0.0.1:1901".to_string()),
                 workers: Some("1".to_string()),
+                max_conns_per_ip: Some("2".to_string()),
                 write_timeout: Some("300".to_string()),
             }),
             1000,
@@ -237,9 +254,74 @@ mod tests {
                 root: site.path().to_path_buf(),
                 listen: "127.0.0.1:1901".parse().unwrap(),
                 workers: 1,
+                max_conns_per_ip: 2,
                 write_timeout: Duration::from_secs(300),
             })
         );
+    }
+
+    #[test]
+    fn derives_max_conns_per_ip_default_from_workers() {
+        let site = TempSite::new();
+        let mode = validate_with_euid(
+            Command::Serve(ServeArgs {
+                root: Some(site.path().to_path_buf()),
+                listen: None,
+                workers: Some("4".to_string()),
+                max_conns_per_ip: None,
+                write_timeout: None,
+            }),
+            1000,
+        )
+        .expect("valid serve config");
+
+        let RunMode::Serve(config) = mode else {
+            panic!("expected serve config");
+        };
+        assert_eq!(config.max_conns_per_ip, 1);
+    }
+
+    #[test]
+    fn validates_max_conns_per_ip_against_workers_plus_one() {
+        let site = TempSite::new();
+        let mode = validate_with_euid(
+            Command::Serve(ServeArgs {
+                root: Some(site.path().to_path_buf()),
+                listen: None,
+                workers: Some("1024".to_string()),
+                max_conns_per_ip: Some("1025".to_string()),
+                write_timeout: None,
+            }),
+            1000,
+        )
+        .expect("workers + 1 is the neutralizing maximum");
+
+        let RunMode::Serve(config) = mode else {
+            panic!("expected serve config");
+        };
+        assert_eq!(config.max_conns_per_ip, 1025);
+    }
+
+    #[test]
+    fn rejects_max_conns_per_ip_outside_worker_dependent_range() {
+        let site = TempSite::new();
+        for value in ["0", "6"] {
+            let err = validate_with_euid(
+                Command::Serve(ServeArgs {
+                    root: Some(site.path().to_path_buf()),
+                    listen: None,
+                    workers: Some("4".to_string()),
+                    max_conns_per_ip: Some(value.to_string()),
+                    write_timeout: None,
+                }),
+                1000,
+            )
+            .unwrap_err();
+            assert_eq!(
+                err.message(),
+                format!("--max-conns-per-ip '{value}': expected a value from 1 to 5")
+            );
+        }
     }
 
     #[test]
@@ -283,6 +365,7 @@ mod tests {
                 root: Some(PathBuf::from("site")),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -301,6 +384,7 @@ mod tests {
                 root: Some(file.clone()),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -321,6 +405,7 @@ mod tests {
                 root: Some(missing.clone()),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -360,6 +445,7 @@ mod tests {
                 root: Some(link.clone()),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -389,6 +475,7 @@ mod tests {
                 root: Some(root),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -428,6 +515,7 @@ mod tests {
                 root: Some(site.path().to_path_buf()),
                 listen: Some("localhost:1900".to_string()),
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -447,6 +535,7 @@ mod tests {
                 root: Some(site.path().to_path_buf()),
                 listen: None,
                 workers: Some("0".to_string()),
+                max_conns_per_ip: None,
                 write_timeout: None,
             }),
             1000,
@@ -466,6 +555,7 @@ mod tests {
                 root: Some(site.path().to_path_buf()),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: Some("999".to_string()),
             }),
             1000,

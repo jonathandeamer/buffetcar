@@ -4,6 +4,7 @@ mod check;
 mod cli;
 mod config;
 mod conn;
+mod limiter;
 mod listing;
 mod root;
 mod sandbox;
