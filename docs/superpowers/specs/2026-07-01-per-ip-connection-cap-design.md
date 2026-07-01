@@ -36,19 +36,27 @@ scopes out. This change is a concurrent *resource* cap, not a *rate* limit.
 Follows the established pattern of `--workers` / `--write-timeout`: an
 operational tuning flag with a safe default, always enforced, no disable switch.
 
-- **Flag:** `--max-conns-per-ip <N>`, validated to `1..=1024` (same range and
-  validation path as `--workers`).
+- **Flag:** `--max-conns-per-ip <N>`, validated to `1..=(workers + 1)`, where
+  the upper bound is the worker pool's true maximum concurrent occupancy (see
+  next bullet). The bound is resolved *after* `workers`, so it tracks the
+  configured pool size (default 128 workers → `1..=129`; max 1024 workers →
+  `1..=1025`).
 - **Default:** derived from the resolved worker count as `max(1, workers / 8)`.
   At the default 128 workers this is **16** — coincidentally the same per-IP cap
   the nftables ruleset uses, giving one coherent number across both layers. It
   scales: 1024 workers → default 128.
 - **Always enforced; no disable sentinel.** The "no flag to disable safety"
   principle is honoured, and no escape hatch is needed as a *special* mechanism:
-  because total in-flight connections are already bounded by `--workers`,
-  setting `--max-conns-per-ip` **equal to or above `--workers`** makes the
+  setting `--max-conns-per-ip` to its maximum, **`workers + 1`**, makes the
   per-IP cap unreachable, naturally neutralising it for deployments that need to
-  (e.g. behind a reverse proxy — see Limitations). This falls out of the plain
-  validated integer with no magic value.
+  (e.g. behind a reverse proxy — see Limitations). The `+ 1` is load-bearing:
+  with the zero-buffer rendezvous channel the accept loop can hold **one**
+  already-accepted connection (parked in `tx.send`) while all `workers` workers
+  are busy, so a single IP can hold at most `workers + 1` permits at once.
+  Capping at `workers` would still drop that extra connection — the one the
+  backlog would otherwise hold — so `workers + 1` is the smallest value that is
+  provably a no-op. This falls out of the plain validated integer with no magic
+  value.
 
 ### Why a flag rather than a hardcoded constant
 
@@ -116,6 +124,12 @@ check-then-increment is atomic on one thread under one lock — the TOCTOU windo
 Increment is single-threaded; decrements are brief and happen only at connection
 end. At 128 workers this contention is negligible.
 
+Peak permits held for a single IP is `workers + 1`: up to `workers` connections
+being handled, plus one already-accepted connection the single accept-loop
+thread can be holding while parked in `tx.send` on the zero-buffer rendezvous
+channel. This ceiling is why the flag's validated maximum is `workers + 1` (see
+Configuration).
+
 ### Over-cap behaviour
 
 Silent drop: the excess connection is closed with no bytes written. Serving
@@ -141,8 +155,8 @@ contract.
   proxy's IP and the cap would throttle all clients as one. buffetcar's
   production deployment serves Nex **directly** (peer IP is the real client), so
   this does not apply there; operators who front it with a proxy set
-  `--max-conns-per-ip` ≥ `--workers` to neutralise it. The same limitation
-  applies to the firewall layer.
+  `--max-conns-per-ip` to `workers + 1` (its maximum) to neutralise it. The same
+  limitation applies to the firewall layer.
 - **IPv6 prefix.** Keyed on the full `IpAddr`. A single IPv6 client controls a
   whole prefix (≥ /64) and could rotate addresses within it, so full-address
   keying is weak for IPv6. Production binds `0.0.0.0` (IPv4 only), so this is
@@ -162,14 +176,18 @@ contract.
   same IP is refused (closed with no body), then release one and assert a fresh
   connection is accepted.
 - **Signature update:** the existing `handles_many_concurrent_clients` test
-  passes a high `max_conns_per_ip` (≥ its client count) so it continues to pass.
+  passes the neutralising maximum `workers + 1` for `max_conns_per_ip`. Its 16
+  loopback clients all share one IP, but with a 4-worker pool at most
+  `workers + 1 = 5` are ever in flight at once, and `workers + 1` is provably a
+  no-op (see Concurrency), so every client still succeeds.
 
 ## Files touched
 
 - `src/limiter.rs` — new module (`PerIpLimiter`, `ConnPermit`, unit tests).
 - `src/lib.rs` — `mod limiter;`.
-- `src/config.rs` — `ServeConfig.max_conns_per_ip`, default derivation from
-  `workers`, `--max-conns-per-ip` range validation.
+- `src/config.rs` — `ServeConfig.max_conns_per_ip`; resolve `workers` first,
+  then derive the default `max(1, workers / 8)` and validate
+  `--max-conns-per-ip` against `1..=(workers + 1)`.
 - `src/cli.rs` — parse `--max-conns-per-ip`; update usage/help text.
 - `src/server.rs` — `serve(...)` parameter; accept-loop acquire/drop; channel
   payload type; worker carries the permit; `run` passes
