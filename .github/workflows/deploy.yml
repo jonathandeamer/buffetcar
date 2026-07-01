@@ -64,6 +64,20 @@ jobs:
           ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
             'sudo install -m 644 /tmp/buffetcar.service /etc/systemd/system/buffetcar.service && rm /tmp/buffetcar.service && sudo systemctl daemon-reload'
 
+      - name: Install host firewall
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            contrib/buffetcar.nftables \
+            admin@nex.jonathandeamer.com:/tmp/buffetcar.nftables
+          ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com '
+            set -e
+            sudo apt-get install -y nftables
+            sudo nft -c -f /tmp/buffetcar.nftables
+            sudo install -m 644 /tmp/buffetcar.nftables /etc/nftables.conf
+            sudo systemctl enable --now nftables
+            sudo nft -f /etc/nftables.conf
+            rm /tmp/buffetcar.nftables'
+
       - name: Restart service
         run: |
           ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \

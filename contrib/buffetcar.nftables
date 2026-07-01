@@ -1,0 +1,48 @@
+#!/usr/sbin/nft -f
+#
+# /etc/nftables.conf
+#
+# Host firewall for the buffetcar Nex server. Installed by the Deploy workflow
+# (.github/workflows/deploy.yml). This is a *surgical* ruleset, not a full
+# perimeter firewall: the Lightsail cloud firewall already allows/denies inbound
+# ports, so port filtering is not this layer's job. Its only job is the thing
+# the cloud firewall structurally cannot do — a per-source-IP cap on connections
+# to the Nex port, closing the worker-exhaustion / slowloris gap tracked in
+# issue #29.
+#
+# Because the input policy stays `accept`, this ruleset can never lock you out of
+# SSH (port 22) or interfere with any other service: it only ever *drops* new
+# connections to tcp/1900 that exceed a single source IP's limits. A throttled
+# client is dropped silently (no RST) — the connection simply times out, which
+# preserves buffetcar's no-leakage contract.
+#
+# The Deploy workflow validates this file with `nft -c -f` before installing it,
+# so a syntax error fails the deploy rather than half-applying a ruleset.
+
+flush ruleset
+
+table inet buffetcar {
+	chain input {
+		# policy accept: the cloud firewall handles port filtering, and an
+		# accept policy means we can only ever add drops for tcp/1900 —
+		# never accidentally block SSH or established traffic.
+		type filter hook input priority filter; policy accept;
+
+		# Per-source concurrent-connection cap. More than 16 simultaneous
+		# connections from one IP to the Nex port -> drop the excess. This
+		# is the resource cap (sibling of the server's --workers pool cap),
+		# keyed per source address so no single IP can monopolise workers.
+		tcp dport 1900 ct state new \
+			meter nex_conns { ip saddr ct count over 16 } \
+			drop
+
+		# Per-source new-connection rate limit. Up to 30 new connections per
+		# minute per IP (small burst allowance); anything under the rate is
+		# accepted, anything over falls through to the drop below. This is
+		# the "rate limiting" the design scopes to the firewall layer.
+		tcp dport 1900 ct state new \
+			meter nex_rate { ip saddr limit rate 30/minute burst 20 packets } \
+			accept
+		tcp dport 1900 ct state new drop
+	}
+}
