@@ -83,7 +83,8 @@ The server is functionally complete and secure; the remaining gaps to "robust pr
 
 - **[#28 — Observability: structured server-side logging](https://github.com/jonathandeamer/buffetcar/issues/28)** — the headline gap. The server is silent today: per-connection `Err`s and worker panics are dropped (`let _ =` in `src/server.rs`). Design-first; respects no-leakage, signal-safety, and the OpenBSD `stdio` pledge.
 - **[#29 — Abuse resistance: per-IP connection/rate limits](https://github.com/jonathandeamer/buffetcar/issues/29)** — timeouts bound a slow client to ~35s of worker-hold, but there is no per-IP cap, so ~128 slow clients can saturate the pool. Design-first, **human-merge** (threat model).
-- **[#27 — Tune the TCP listen backlog](https://github.com/jonathandeamer/buffetcar/issues/27)** — `good first issue`. `TcpListener::bind` takes the OS default backlog; set it explicitly via the `rustix` `net` feature (already a dependency).
+
+(**[#27 — TCP listen backlog](https://github.com/jonathandeamer/buffetcar/issues/27)** is **done** — `server::bind_with_backlog` sets an explicit backlog via `rustix` `net` instead of the OS default; landed in #40/#41.)
 
 ### Known future considerations (deliberately not yet filed)
 
