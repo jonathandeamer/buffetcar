@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-01
 **Issue:** [#29 — Abuse resistance: per-IP connection/rate limits](https://github.com/jonathandeamer/buffetcar/issues/29)
-**Status:** design approved, pending implementation plan
+**Status:** implemented
 
 ## Problem
 
@@ -100,8 +100,10 @@ impl Drop for ConnPermit {
 
 ### Lifecycle in the accept loop (`src/server.rs`)
 
-`serve(...)` gains a `max_conns_per_ip: u32` parameter and constructs an
-`Arc<PerIpLimiter>` shared with the workers via the channel payload.
+The private `ServeSettings` gains a `max_conns_per_ip: u32` field, and
+`serve(...)` constructs an `Arc<PerIpLimiter>` shared with the workers via the
+channel payload. Grouping worker count, cap, and timeouts in `ServeSettings`
+keeps the function below Clippy's argument-count limit.
 
 - `accept()` already returns the peer `SocketAddr` (currently discarded as
   `(stream, _)`); take `ip = peer.ip()`.
@@ -189,9 +191,9 @@ contract.
   then derive the default `max(1, workers / 8)` and validate
   `--max-conns-per-ip` against `1..=(workers + 1)`.
 - `src/cli.rs` — parse `--max-conns-per-ip`; update usage/help text.
-- `src/server.rs` — `serve(...)` parameter; accept-loop acquire/drop; channel
-  payload type; worker carries the permit; `run` passes
-  `config.max_conns_per_ip`.
+- `src/server.rs` — `ServeSettings.max_conns_per_ip`; accept-loop acquire/drop;
+  channel payload type; worker carries the permit; `run` passes
+  `config.max_conns_per_ip` into the settings value.
 - `tests/check_contract.rs` — CLI help/usage snapshot for the new flag.
 - `SECURITY.md` — note worker-exhaustion is now mitigated in-app (per-IP cap) in
   addition to the firewall.
