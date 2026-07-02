@@ -1,12 +1,14 @@
 //! TCP listener and fixed worker-thread pool.
 //!
 //! The `Root` capability is opened once and shared across workers behind an
-//! `Arc`. A rendezvous `sync_channel` plus exactly `workers` threads caps
-//! concurrency: a connection is dispatched only when a worker is waiting to
-//! receive, so there is no unbounded spawn-per-connection and no async runtime.
+//! `Arc`. A rendezvous `sync_channel` plus exactly `workers` threads caps active
+//! handlers at `workers`; the single accept loop can hold one additional accepted
+//! stream while blocked in `send`. There is no unbounded spawn-per-connection and
+//! no async runtime.
 
 use crate::config::{self, ServeConfig};
 use crate::conn;
+use crate::limiter::{ConnPermit, PerIpLimiter};
 use crate::root::Root;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -73,16 +75,13 @@ pub(crate) fn run(config: &ServeConfig, mut banner: impl Write) -> Result<(), Se
         &mut banner,
     );
 
-    serve(
-        listener,
-        root,
-        config.workers,
-        Duration::from_secs(config::READ_TIMEOUT_SECS),
-        config.write_timeout,
-        &shutdown,
-        wake_fd,
-    )
-    .map_err(ServeError::Serve)
+    let settings = ServeSettings {
+        workers: config.workers,
+        max_conns_per_ip: config.max_conns_per_ip,
+        read_timeout: Duration::from_secs(config::READ_TIMEOUT_SECS),
+        write_timeout: config.write_timeout,
+    };
+    serve(listener, root, settings, &shutdown, wake_fd).map_err(ServeError::Serve)
 }
 
 /// TCP listen backlog: number of fully-established connections the kernel
@@ -135,6 +134,14 @@ fn bind_with_backlog(addr: SocketAddr) -> io::Result<TcpListener> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ServeSettings {
+    workers: usize,
+    max_conns_per_ip: u32,
+    read_timeout: Duration,
+    write_timeout: Duration,
+}
+
 /// `wake_fd` is the read end of the shutdown self-pipe (see `crate::signal`).
 /// It is polled alongside the listener so a shutdown signal wakes the accept
 /// loop even with no pending connection; `-1` disables it (tests that drive
@@ -142,24 +149,23 @@ fn bind_with_backlog(addr: SocketAddr) -> io::Result<TcpListener> {
 fn serve(
     listener: TcpListener,
     root: Root,
-    workers: usize,
-    read_timeout: Duration,
-    write_timeout: Duration,
+    settings: ServeSettings,
     shutdown: &AtomicBool,
     wake_fd: libc::c_int,
 ) -> io::Result<()> {
     let root = Arc::new(root);
-    // Rendezvous channel: a send blocks until a worker is waiting to receive,
-    // so at most `workers` connections are in flight at once.
-    let (tx, rx) = mpsc::sync_channel::<TcpStream>(0);
+    let limiter = Arc::new(PerIpLimiter::new(settings.max_conns_per_ip));
+    // The zero-capacity channel allows at most `workers` handled connections
+    // plus one accepted connection parked in `send`.
+    let (tx, rx) = mpsc::sync_channel::<(TcpStream, ConnPermit)>(0);
     let rx = Arc::new(Mutex::new(rx));
 
-    let mut handles = Vec::with_capacity(workers);
-    for _ in 0..workers {
+    let mut handles = Vec::with_capacity(settings.workers);
+    for _ in 0..settings.workers {
         let rx = Arc::clone(&rx);
         let root = Arc::clone(&root);
         handles.push(thread::spawn(move || {
-            worker_loop(&rx, &root, read_timeout, write_timeout)
+            worker_loop(&rx, &root, settings.read_timeout, settings.write_timeout)
         }));
     }
 
@@ -232,9 +238,12 @@ fn serve(
             }
 
             match listener.accept() {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
+                    let Some(permit) = limiter.try_acquire(peer.ip()) else {
+                        continue;
+                    };
                     stream.set_nonblocking(false)?;
-                    if tx.send(stream).is_err() {
+                    if tx.send((stream, permit)).is_err() {
                         break; // all workers have gone away
                     }
                 }
@@ -257,7 +266,13 @@ fn serve(
             }
             match stream {
                 Ok(stream) => {
-                    if tx.send(stream).is_err() {
+                    let Ok(peer) = stream.peer_addr() else {
+                        continue;
+                    };
+                    let Some(permit) = limiter.try_acquire(peer.ip()) else {
+                        continue;
+                    };
+                    if tx.send((stream, permit)).is_err() {
                         break; // all workers have gone away
                     }
                 }
@@ -290,7 +305,7 @@ fn drain_fd(fd: libc::c_int) {
 }
 
 fn worker_loop(
-    rx: &Mutex<Receiver<TcpStream>>,
+    rx: &Mutex<Receiver<(TcpStream, ConnPermit)>>,
     root: &Root,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -300,11 +315,12 @@ fn worker_loop(
         // Hold the lock only across `recv`; release it before handling so other
         // workers can pick up the next connection. Recover from a poisoned lock
         // rather than panicking, so one failed worker cannot collapse the pool.
-        let stream = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
-            Ok(stream) => stream,
+        let (stream, _permit) = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
+            Ok(item) => item,
             Err(_) => return, // channel closed: shut the worker down
         };
         // Connection-level errors are silent; the connection is simply dropped.
+        // `_permit` drops at the end of this iteration, including during unwind.
         let _ = conn::handle(stream, root, read_timeout, write_timeout);
     }
 }
@@ -316,6 +332,7 @@ mod tests {
     use crate::test_support::TempSite;
     use std::io::Read as _;
     use std::net::{Shutdown, SocketAddr, TcpStream};
+    use std::time::Instant;
 
     /// A shutdown flag that is never set, for tests that don't exercise shutdown.
     static NEVER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -329,6 +346,15 @@ mod tests {
         response
     }
 
+    fn serve_settings(workers: usize, max_conns_per_ip: u32) -> ServeSettings {
+        ServeSettings {
+            workers,
+            max_conns_per_ip,
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+        }
+    }
+
     #[test]
     fn serves_files_over_loopback() {
         let site = TempSite::new();
@@ -337,15 +363,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         thread::spawn(move || {
-            let _ = serve(
-                listener,
-                root,
-                4,
-                Duration::from_secs(5),
-                Duration::from_secs(5),
-                &NEVER_SHUTDOWN,
-                -1,
-            );
+            let _ = serve(listener, root, serve_settings(4, 5), &NEVER_SHUTDOWN, -1);
         });
 
         assert_eq!(request(addr, b"a.txt\n"), b"hi\n");
@@ -360,15 +378,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         thread::spawn(move || {
-            let _ = serve(
-                listener,
-                root,
-                4,
-                Duration::from_secs(5),
-                Duration::from_secs(5),
-                &NEVER_SHUTDOWN,
-                -1,
-            );
+            let _ = serve(listener, root, serve_settings(4, 5), &NEVER_SHUTDOWN, -1);
         });
 
         let mut clients = Vec::new();
@@ -381,6 +391,61 @@ mod tests {
     }
 
     #[test]
+    fn per_ip_cap_refuses_excess_and_releases_permits() {
+        let site = TempSite::new();
+        site.write("a.txt", b"hi\n");
+        let root = Root::open(site.path()).expect("open root");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        thread::spawn(move || {
+            let _ = serve(listener, root, serve_settings(4, 2), &NEVER_SHUTDOWN, -1);
+        });
+
+        let mut first = TcpStream::connect(addr).expect("first held connection");
+        let _second = TcpStream::connect(addr).expect("second held connection");
+
+        let mut refused = TcpStream::connect(addr).expect("excess connection");
+        refused
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set refused read timeout");
+        let mut refused_body = Vec::new();
+        refused
+            .read_to_end(&mut refused_body)
+            .expect("excess connection should close");
+        assert!(
+            refused_body.is_empty(),
+            "refusal must write no response body"
+        );
+
+        first.write_all(b"a.txt\n").expect("finish first request");
+        first
+            .shutdown(Shutdown::Write)
+            .expect("shutdown first write");
+        let mut first_body = Vec::new();
+        first
+            .read_to_end(&mut first_body)
+            .expect("read first response");
+        assert_eq!(first_body, b"hi\n");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let response = request(addr, b"a.txt\n");
+            if response == b"hi\n" {
+                break;
+            }
+            assert!(
+                response.is_empty(),
+                "retry must be served or silently refused"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "released permit was not reusable"
+            );
+            thread::yield_now();
+        }
+    }
+
+    #[test]
     fn run_reports_bind_conflict() {
         let site = TempSite::new();
         let occupied = TcpListener::bind("127.0.0.1:0").expect("occupy port");
@@ -389,6 +454,7 @@ mod tests {
             root: site.path().to_path_buf(),
             listen: addr,
             workers: 1,
+            max_conns_per_ip: 2,
             write_timeout: Duration::from_secs(1),
         };
 
@@ -411,17 +477,8 @@ mod tests {
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
 
-        let handle = thread::spawn(move || {
-            serve(
-                listener,
-                root,
-                4,
-                Duration::from_secs(5),
-                Duration::from_secs(5),
-                &shutdown_clone,
-                -1,
-            )
-        });
+        let handle =
+            thread::spawn(move || serve(listener, root, serve_settings(4, 5), &shutdown_clone, -1));
 
         // Verify the server is working first.
         assert_eq!(request(addr, b"a.txt\n"), b"hi\n");
@@ -446,17 +503,8 @@ mod tests {
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
 
-        let handle = thread::spawn(move || {
-            serve(
-                listener,
-                root,
-                4,
-                Duration::from_secs(5),
-                Duration::from_secs(5),
-                &shutdown_clone,
-                -1,
-            )
-        });
+        let handle =
+            thread::spawn(move || serve(listener, root, serve_settings(4, 5), &shutdown_clone, -1));
 
         // Start a request, then signal shutdown while it's in flight.
         let mut client = TcpStream::connect(addr).expect("connect");
@@ -516,9 +564,7 @@ mod tests {
             let r = serve(
                 listener,
                 root,
-                4,
-                Duration::from_secs(5),
-                Duration::from_secs(5),
+                serve_settings(4, 5),
                 &shutdown_clone,
                 read_fd,
             );

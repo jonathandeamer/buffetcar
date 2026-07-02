@@ -25,6 +25,7 @@ pub(crate) struct ServeArgs {
     pub(crate) root: Option<PathBuf>,
     pub(crate) listen: Option<String>,
     pub(crate) workers: Option<String>,
+    pub(crate) max_conns_per_ip: Option<String>,
     pub(crate) write_timeout: Option<String>,
 }
 
@@ -59,7 +60,7 @@ impl CliError {
 }
 
 pub(crate) const USAGE: &str = "\
-usage: buffetcar [serve] --root <PATH> [--listen <ADDR>] [--workers <N>] [--write-timeout <SECS>]
+usage: buffetcar [serve] --root <PATH> [--listen <ADDR>] [--workers <N>] [--max-conns-per-ip <N>] [--write-timeout <SECS>]
        buffetcar check --root <PATH> <selector>...
 ";
 
@@ -172,6 +173,10 @@ fn parse_serve(args: &[OsString]) -> Result<ServeArgs, CliError> {
             "--workers" => {
                 i += 1;
                 parsed.workers = Some(take_utf8_value(args, i, "--workers")?);
+            }
+            "--max-conns-per-ip" => {
+                i += 1;
+                parsed.max_conns_per_ip = Some(take_utf8_value(args, i, "--max-conns-per-ip")?);
             }
             "--write-timeout" => {
                 i += 1;
@@ -317,7 +322,7 @@ buffetcar {serve_cmd}
 Start the Nex server daemon.
 
 {usage_hdr}
-    buffetcar [{serve_cmd}] {root_flag} {path_val} [{listen_flag} {addr_val}] [{workers_flag} {n_val}] [{write_timeout_flag} {secs_val}]
+    buffetcar [{serve_cmd}] {root_flag} {path_val} [{listen_flag} {addr_val}] [{workers_flag} {n_val}] [{max_conns_per_ip_flag} {n_val}] [{write_timeout_flag} {secs_val}]
 
 {options_hdr}
     {root_flag} {path_val}           (Required) Absolute path to the directory to serve.
@@ -333,6 +338,10 @@ Start the Nex server daemon.
     {workers_flag} {n_val}           Number of worker threads (between 1 and 1024, default: 128).
                             Limits the maximum concurrent connections the server handles.
 
+    {max_conns_per_ip_flag} {n_val}
+                            Per-IP concurrent-connection cap (between 1 and workers + 1;
+                            default: max(1, workers / 8)). Excess connections are dropped.
+
     {write_timeout_flag} {secs_val}  Socket write timeout in seconds (between 1 and 300, default: 30).
                             Stalled connections are dropped after this time.
 ",
@@ -343,6 +352,7 @@ Start the Nex server daemon.
         listen_flag = styler.green("--listen"),
         addr_val = styler.yellow("<ADDR>"),
         workers_flag = styler.green("--workers"),
+        max_conns_per_ip_flag = styler.green("--max-conns-per-ip"),
         n_val = styler.yellow("<N>"),
         write_timeout_flag = styler.green("--write-timeout"),
         secs_val = styler.yellow("<SECS>"),
@@ -400,6 +410,7 @@ mod tests {
                 root: Some(PathBuf::from("/srv/nex")),
                 listen: None,
                 workers: None,
+                max_conns_per_ip: None,
                 write_timeout: None,
             }))
         );
@@ -417,6 +428,8 @@ mod tests {
                 "127.0.0.1:1900",
                 "--workers",
                 "64",
+                "--max-conns-per-ip",
+                "8",
                 "--write-timeout",
                 "10",
             ])),
@@ -424,6 +437,7 @@ mod tests {
                 root: Some(PathBuf::from("/srv/nex")),
                 listen: Some("127.0.0.1:1900".to_string()),
                 workers: Some("64".to_string()),
+                max_conns_per_ip: Some("8".to_string()),
                 write_timeout: Some("10".to_string()),
             }))
         );

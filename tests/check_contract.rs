@@ -262,6 +262,9 @@ fn help_screen_triggers_and_content() {
     assert!(out_serve_str.contains("Start the Nex server daemon."));
     assert!(out_serve_str.contains("--root <PATH>"));
     assert!(out_serve_str.contains("between 1 and 1024"));
+    assert!(out_serve_str.contains("--max-conns-per-ip <N>"));
+    assert!(out_serve_str.contains("between 1 and workers + 1"));
+    assert!(out_serve_str.contains("default: max(1, workers / 8)"));
 
     // Check help
     let mut out_check = Vec::new();
@@ -281,6 +284,7 @@ fn error_output_includes_help_hint() {
     let err_str = String::from_utf8(err).unwrap();
     assert!(err_str.contains("error: unknown argument '--invalid-flag'"));
     assert!(err_str.contains("usage: buffetcar"));
+    assert!(err_str.contains("[--max-conns-per-ip <N>]"));
     assert!(err_str.contains("For detailed help, run: buffetcar help serve"));
 }
 

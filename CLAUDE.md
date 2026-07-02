@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `buffetcar` (crate name) is a hardened, single-binary **Nex** server in Rust. Nex is a minimal protocol: the client sends one selector line over TCP (port 1900 by default), the server replies with the raw text/binary bytes of a file — or a generated directory listing using `=> ` links — then closes. No status codes, no connection state, no URL decoding.
 
-The project is **design-led**: the authoritative specs and plans live under `docs/superpowers/`. The full server is now implemented across focused modules in `src/` (`cli`, `config`, `server`, `conn`, `selector`, `root`, `listing`, `sandbox`, plus `lib`, `main`, `check`). Read the authoritative design before making non-trivial changes (see below).
+The project is **design-led**: the authoritative specs and plans live under `docs/superpowers/`. The full server is now implemented across focused modules in `src/` (`cli`, `config`, `server`, `conn`, `limiter`, `selector`, `root`, `listing`, `sandbox`, plus `lib`, `main`, `check`). Read the authoritative design before making non-trivial changes (see below).
 
 ## Commands
 
@@ -83,7 +83,8 @@ Production runs on a single AWS Lightsail box (Debian), serving `/srv/nex` on po
 The server is functionally complete and secure; the remaining gaps to "robust production server" are operational. Tracked as open issues:
 
 - **[#28 — Observability: structured server-side logging](https://github.com/jonathandeamer/buffetcar/issues/28)** — the headline gap. The server is silent today: per-connection `Err`s and worker panics are dropped (`let _ =` in `src/server.rs`). Design-first; respects no-leakage, signal-safety, and the OpenBSD `stdio` pledge.
-- **[#29 — Abuse resistance: per-IP connection/rate limits](https://github.com/jonathandeamer/buffetcar/issues/29)** — timeouts bound a slow client to ~35s of worker-hold, but there is no per-IP cap, so ~128 slow clients can saturate the pool. The **host-firewall layer now exists** (`contrib/buffetcar.nftables`, per-source cap on tcp/1900), closing the single-source case at the right layer with zero app complexity. What remains open is the *in-app* per-IP concurrent cap, justified narrowly as making the binary safe-by-default when deployed **without** a firewall — design-first, **human-merge** (threat model).
+
+(**[#29 — Abuse resistance: per-IP connection/rate limits](https://github.com/jonathandeamer/buffetcar/issues/29)** is **done** — the host firewall enforces per-source concurrent and new-connection-rate limits in production, while the in-app `--max-conns-per-ip` cap makes the binary safe-by-default without a firewall. The application cap is concurrent-resource accounting only; rate limiting remains at the firewall layer.)
 
 (**[#27 — TCP listen backlog](https://github.com/jonathandeamer/buffetcar/issues/27)** is **done** — `server::bind_with_backlog` sets an explicit backlog via `rustix` `net` instead of the OS default; landed in #40/#41.)
 
@@ -94,4 +95,3 @@ Parked here so we revisit them rather than rediscover them. Each is a decision a
 - **Shutdown drain deadline** — graceful drain is bounded only by the 30s write timeout; there is no forced-exit fallback if a worker wedges.
 - **Dual-stack bind** — `serve` takes a single `SocketAddr`, so one process cannot serve IPv4 and IPv6 simultaneously (operators run two instances or bind `::`).
 - **systemd `sd_notify` readiness + socket activation** — a refinement to the [Deployment](#deployment) unit, which uses a plain `Restart=always` today. Parked rather than filed.
-
