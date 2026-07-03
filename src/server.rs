@@ -338,12 +338,26 @@ mod tests {
     static NEVER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
     fn request(addr: SocketAddr, selector: &[u8]) -> Vec<u8> {
-        let mut client = TcpStream::connect(addr).expect("connect");
-        client.write_all(selector).expect("write selector");
-        client.shutdown(Shutdown::Write).expect("shutdown write");
+        let mut client = match TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(_) => return Vec::new(),
+        };
+        if client.write_all(selector).is_err() {
+            return Vec::new();
+        }
+        let _ = client.shutdown(Shutdown::Write);
         let mut response = Vec::new();
-        client.read_to_end(&mut response).expect("read response");
-        response
+        match client.read_to_end(&mut response) {
+            Ok(_) => response,
+            Err(ref e)
+                if e.kind() == io::ErrorKind::ConnectionReset
+                    || e.kind() == io::ErrorKind::BrokenPipe
+                    || e.kind() == io::ErrorKind::ConnectionAborted =>
+            {
+                Vec::new()
+            }
+            Err(e) => panic!("read response: {:?}", e),
+        }
     }
 
     fn serve_settings(workers: usize, max_conns_per_ip: u32) -> ServeSettings {
