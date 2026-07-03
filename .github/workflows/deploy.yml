@@ -35,14 +35,14 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan nex.jonathandeamer.com >> ~/.ssh/known_hosts
+          ssh-keyscan -p 22022 nex.jonathandeamer.com >> ~/.ssh/known_hosts
 
       - name: Upload binary
         run: |
-          scp -i ~/.ssh/deploy_key \
+          scp -P 22022 -i ~/.ssh/deploy_key \
             target/x86_64-unknown-linux-musl/release/buffetcar \
             admin@nex.jonathandeamer.com:/tmp/buffetcar
-          ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
+          ssh -p 22022 -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
             'sudo install -m 755 /tmp/buffetcar /usr/local/bin/buffetcar && rm /tmp/buffetcar'
 
       - name: Sync content
@@ -52,24 +52,24 @@ jobs:
             --exclude='target/' \
             --exclude='contrib/' \
             --rsync-path='sudo rsync' \
-            -e "ssh -i ~/.ssh/deploy_key" \
+            -e "ssh -p 22022 -i ~/.ssh/deploy_key" \
             . \
             admin@nex.jonathandeamer.com:/srv/nex/buffetcar/
 
       - name: Install systemd unit
         run: |
-          scp -i ~/.ssh/deploy_key \
+          scp -P 22022 -i ~/.ssh/deploy_key \
             contrib/buffetcar.service \
             admin@nex.jonathandeamer.com:/tmp/buffetcar.service
-          ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
+          ssh -p 22022 -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
             'sudo install -m 644 /tmp/buffetcar.service /etc/systemd/system/buffetcar.service && rm /tmp/buffetcar.service && sudo systemctl daemon-reload'
 
       - name: Install host firewall
         run: |
-          scp -i ~/.ssh/deploy_key \
+          scp -P 22022 -i ~/.ssh/deploy_key \
             contrib/buffetcar.nftables \
             admin@nex.jonathandeamer.com:/tmp/buffetcar.nftables
-          ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com '
+          ssh -p 22022 -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com '
             set -e
             sudo apt-get install -y nftables
             sudo nft -c -f /tmp/buffetcar.nftables
@@ -80,5 +80,5 @@ jobs:
 
       - name: Restart service
         run: |
-          ssh -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
+          ssh -p 22022 -i ~/.ssh/deploy_key admin@nex.jonathandeamer.com \
             'sudo systemctl restart buffetcar'
