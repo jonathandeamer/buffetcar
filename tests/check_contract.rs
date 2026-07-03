@@ -238,6 +238,7 @@ fn make_chain_public(root: &Path, leaf: &Path) {
 
 #[test]
 fn help_screen_triggers_and_content() {
+    std::env::set_var("NO_COLOR", "1");
     let mut out = Vec::new();
     let mut err = Vec::new();
 
@@ -277,6 +278,7 @@ fn help_screen_triggers_and_content() {
 
 #[test]
 fn error_output_includes_help_hint() {
+    std::env::set_var("NO_COLOR", "1");
     let mut out = Vec::new();
     let mut err = Vec::new();
     let code = buffetcar::run_with_io(vec!["buffetcar", "--invalid-flag"], &mut out, &mut err);
@@ -290,6 +292,7 @@ fn error_output_includes_help_hint() {
 
 #[test]
 fn bare_run_displays_help_and_exits_zero() {
+    std::env::set_var("NO_COLOR", "1");
     let mut out = Vec::new();
     let mut err = Vec::new();
     let code = buffetcar::run_with_io(vec!["buffetcar"], &mut out, &mut err);
