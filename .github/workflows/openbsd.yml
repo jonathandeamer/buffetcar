@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Test in OpenBSD VM
-        uses: vmactions/openbsd-vm@18edb32f4e48dae5865d7b8b3a9587bc01218a20
+        uses: vmactions/openbsd-vm@e6c68b637a12e83519688d115d57d5b0b53923cd
         with:
           usesh: true
           # The VM runs scripts as root, but buffetcar refuses to run as root
